@@ -1,0 +1,36 @@
+[package]
+name = "rhythm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"] # cdylib for Android, rlib so main.rs can use it
+path = "src/lib.rs"
+name = "rhythm_lib"
+
+[[bin]]
+name = "rhythm"
+path = "src/main.rs"
+
+[dependencies]
+atomic-write-file = "0.3.1"
+directories = "6.0.0"
+serde = "1.0.229"
+serde_json = "1.0.154"
+slint = "1.19.0"
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.19", features = ["backend-android-activity-06"] }
+
+[build-dependencies]
+slint-build = "1.19.0"
+
+[package.metadata.android]
+package = "org.HiBalance.rhythm"
+apk_name = "rhythm"
+
+[package.metadata.android.application]
+label = "Rhythm"

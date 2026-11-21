@@ -1,0 +1,47 @@
+import {
+    ModalNavigationDrawer,
+    IconButton,
+    MaterialWindow,
+    AppBar,
+    NavigationRail,
+    NavigationDrawer,
+    Horizontal,
+    VerticalDivider,
+} from "@material";
+import { HomePage } from "pages/home.slint";
+import { RulesPage } from "pages/rules.slint";
+import { SettingsPage } from "pages/settings.slint";
+import { AboutPage } from "pages/about.slint";
+
+export component MainWindow inherits MaterialWindow {
+    preferred-width: 800px;
+    preferred-height: 600px;
+
+    in-out property <int> current-page: 0;
+    callback page-changed(int);
+
+    Horizontal {
+        alignment: start;
+
+        NavigationRail {
+            alignment: start;
+            current-index <=> root.current-page;
+
+            index_changed(index) => { page-changed(index); }
+
+            items: [
+                { icon: @image-url("../assets/icons/home.svg"), text: "Home" },
+                { icon: @image-url("../assets/icons/page_info.svg"), text: "Rules" },
+                { icon: @image-url("../assets/icons/settings.svg"), text: "Settings" },
+                { icon: @image-url("../assets/icons/info.svg"), text: "About" }
+            ];
+        }
+
+        VerticalDivider { }
+
+        if root.current-page == 0: HomePage { }
+        if root.current-page == 1: RulesPage { }
+        if root.current-page == 2: SettingsPage { }
+        if root.current-page == 3: AboutPage { }
+    }
+}
