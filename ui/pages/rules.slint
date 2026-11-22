@@ -1,3 +1,133 @@
-export component RulesPage inherits Rectangle {
+import { ScrollView, Button, LineEdit, ComboBox, Palette } from "std-widgets.slint";
 
+export struct RuleEdit {
+    id: string,
+    name: string,
+    message: string,
+    which-timer: string,
+    trigger-if: string,
+    trigger-hours: string,
+    trigger-minutes: string,
+    tolerance-hours: string,
+    tolerance-minutes: string,
+}
+
+export component RulesPage inherits Rectangle {
+    in property <[RuleEdit]> rules;
+
+    callback field-changed(int, string, string);
+    callback add-rule();
+    callback remove-rule(int);
+    callback save-rules();
+    callback reset-rules();
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+
+        VerticalLayout {
+            padding: 1rem;
+            spacing: 1rem;
+            alignment: start;
+
+            for rule[index] in root.rules: Rectangle {
+                background: Palette.alternate-background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 0.5rem;
+
+                VerticalLayout {
+                    padding: 1rem;
+                    spacing: 0.5rem;
+
+                    HorizontalLayout {
+                        Text {
+                            text: "Rule \{index + 1}";
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "Delete";
+                            clicked => { root.remove-rule(index); }
+                        }
+                    }
+
+                    Text { text: "Name"; }
+                    LineEdit {
+                        text: rule.name;
+                        edited(value) => { root.field-changed(index, "name", value); }
+                    }
+
+                    Text { text: "Message"; }
+                    LineEdit {
+                        text: rule.message;
+                        edited(value) => { root.field-changed(index, "message", value); }
+                    }
+
+                    Text { text: "Timer"; }
+                    ComboBox {
+                        model: ["working", "sleep", "system"];
+                        current-value: rule.which-timer;
+                        selected(value) => { root.field-changed(index, "which-timer", value); }
+                    }
+
+                    Text { text: "Condition"; }
+                    ComboBox {
+                        model: ["more", "less", "same"];
+                        current-value: rule.trigger-if;
+                        selected(value) => { root.field-changed(index, "trigger-if", value); }
+                    }
+
+                    Text { text: "Trigger after"; }
+                    HorizontalLayout {
+                        spacing: 0.5rem;
+                        LineEdit {
+                            text: rule.trigger-hours;
+                            edited(value) => { root.field-changed(index, "trigger-hours", value); }
+                        }
+                        Text { text: "h"; vertical-alignment: center; }
+                        LineEdit {
+                            text: rule.trigger-minutes;
+                            edited(value) => { root.field-changed(index, "trigger-minutes", value); }
+                        }
+                        Text { text: "m"; vertical-alignment: center; }
+                    }
+
+                    Text { text: "Tolerance"; }
+                    HorizontalLayout {
+                        spacing: 0.5rem;
+                        LineEdit {
+                            text: rule.tolerance-hours;
+                            edited(value) => { root.field-changed(index, "tolerance-hours", value); }
+                        }
+                        Text { text: "h"; vertical-alignment: center; }
+                        LineEdit {
+                            text: rule.tolerance-minutes;
+                            edited(value) => { root.field-changed(index, "tolerance-minutes", value); }
+                        }
+                        Text { text: "m"; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Button {
+                    text: "Add rule";
+                    clicked => { root.add-rule(); }
+                }
+                Button {
+                    text: "Reset to defaults";
+                    clicked => { root.reset-rules(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Save";
+                    clicked => { root.save-rules(); }
+                }
+            }
+        }
+    }
 }

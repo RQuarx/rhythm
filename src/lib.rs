@@ -1,10 +1,24 @@
+use std::{cell::RefCell, rc::Rc};
+
+use slint::{Model, ModelRc, SharedString, VecModel};
 use thiserror::Error;
 
 mod app;
+mod notification;
+mod report_history;
+mod reporter;
 mod settings;
+mod sleep;
+mod storage;
 mod user;
+mod work;
+
+pub use app::error_details;
+pub use reporter::report_fatal;
 
 slint::include_modules!();
+
+use app::{DayUsage as AppDayUsage, RuleConfig, UsagePeriod};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -13,23 +27,376 @@ pub enum Error {
 
     #[error("{0}")]
     ApplicationError(#[from] app::Error),
+
+    #[error("{0}")]
+    NotificationError(#[from] Box<dyn std::error::Error>),
 }
 
-pub fn run() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
-    let app = app::Application::new()?;
+pub fn run(mobile: bool) -> Result<(), Error> {
     let ui = MainWindow::new()?;
+    let reporter = reporter::Reporter::new(ui.as_weak());
 
+    ui.set_is_mobile(mobile);
     ui.on_page_changed(|index| println!("{index}"));
-    ui.run().map_err(|e| Error::PlatformError(e))
+    ui.on_report_dismissed({
+        let reporter = reporter.clone();
+        move |id| reporter.dismiss(id)
+    });
+    ui.on_fatal_quit(reporter::Reporter::quit);
+
+    match app::App::new(Box::new(reporter.clone())) {
+        Ok(app) => {
+            ui.set_app_version(app::App::version().into());
+
+            let app = Rc::new(RefCell::new(app));
+
+            let refresh = {
+                let app = app.clone();
+                let weak = ui.as_weak();
+                move || {
+                    if let Some(ui) = weak.upgrade() {
+                        let snapshot = app.borrow().snapshot();
+                        ui.set_today_working_hour(snapshot.today_working_hour.into());
+                        ui.set_week_working_hour(snapshot.week_working_hour.into());
+                        ui.set_max_working_hour(snapshot.max_working_hour.into());
+
+                        ui.set_today_sleeping_hour(snapshot.today_sleeping_hour.into());
+                        ui.set_week_sleeping_hour(snapshot.week_sleeping_hour.into());
+                        ui.set_min_sleeping_hour(snapshot.min_sleeping_hour.into());
+
+                        ui.set_max_working_time(snapshot.max_working_time as i32);
+                        ui.set_current_working_time(snapshot.current_working_time as i32);
+                        ui.set_max_sleeping_time(snapshot.max_sleeping_time as i32);
+                        ui.set_current_sleeping_time(snapshot.current_sleeping_time as i32);
+
+                        ui.set_work_running(snapshot.work_running);
+                        ui.set_work_paused(snapshot.work_paused);
+                        ui.set_sleeping(snapshot.sleeping);
+
+                        ui.set_sleep_need_bedtime(snapshot.need_bedtime);
+                        ui.set_sleep_pending_seconds(snapshot.pending_seconds as i32);
+                        ui.set_sleep_pending_hours(snapshot.pending_hours.into());
+                        ui.set_sleep_pending_minutes(snapshot.pending_minutes.into());
+                    }
+                }
+            };
+
+            let refresh_settings = {
+                let app = app.clone();
+                let weak = ui.as_weak();
+                move || {
+                    if let Some(ui) = weak.upgrade() {
+                        let snapshot = app.borrow().snapshot();
+                        ui.set_settings_theme(snapshot.theme.into());
+                        ui.set_settings_notifications(snapshot.notifications_enabled);
+                        ui.set_settings_quiet_start(snapshot.quiet_start.into());
+                        ui.set_settings_quiet_end(snapshot.quiet_end.into());
+                    }
+                }
+            };
+
+            let rule_model = Rc::new(VecModel::from(
+                app.borrow()
+                    .rule_configs()
+                    .iter()
+                    .map(config_to_edit)
+                    .collect::<Vec<_>>(),
+            ));
+            ui.set_rule_edits(ModelRc::new(rule_model.clone()));
+
+            let usage_model = Rc::new(VecModel::from(Vec::<DayUsage>::new()));
+            let report_model = Rc::new(VecModel::from(Vec::<ReportItem>::new()));
+            ui.set_usage_days(ModelRc::new(usage_model.clone()));
+            ui.set_recent_reports(ModelRc::new(report_model.clone()));
+
+            let refresh_dashboard = {
+                let app = app.clone();
+                let weak = ui.as_weak();
+                let usage_model = usage_model.clone();
+                let report_model = report_model.clone();
+                move || {
+                    if let Some(ui) = weak.upgrade() {
+                        let period = if ui.get_monthly() {
+                            UsagePeriod::Month
+                        } else {
+                            UsagePeriod::Week
+                        };
+                        let days = app.borrow().usage_series(period);
+                        usage_model.set_vec(days.iter().map(day_to_slint).collect::<Vec<_>>());
+
+                        let reports = app.borrow().recent_reports();
+                        report_model
+                            .set_vec(reports.iter().map(report_to_slint).collect::<Vec<_>>());
+
+                        let snapshot = app.borrow().snapshot();
+                        ui.set_chart_max(snapshot.chart_max as i32);
+                        ui.set_average_work(snapshot.stats.average_work.into());
+                        ui.set_average_sleep(snapshot.stats.average_sleep.into());
+                        ui.set_streak(snapshot.stats.streak as i32);
+                        ui.set_work_goal_percent(snapshot.stats.work_goal_percent);
+                        ui.set_sleep_goal_percent(snapshot.stats.sleep_goal_percent);
+                    }
+                }
+            };
+
+            ui.on_tick({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                let refresh_dashboard = refresh_dashboard.clone();
+                move || {
+                    app.borrow_mut().tick();
+                    refresh();
+                    refresh_dashboard();
+                }
+            });
+
+            ui.on_toggle_period(refresh_dashboard.clone());
+
+            ui.on_on_work_start({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().start_work();
+                    refresh();
+                }
+            });
+            ui.on_on_work_pause({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().pause_work();
+                    refresh();
+                }
+            });
+            ui.on_on_work_unpause({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().unpause_work();
+                    refresh();
+                }
+            });
+            ui.on_on_work_stop({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().stop_work();
+                    refresh();
+                }
+            });
+
+            ui.on_on_sleep_start({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().start_sleep();
+                    refresh();
+                }
+            });
+            ui.on_on_sleep_wake_up({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().wake_up_sleep();
+                    refresh();
+                }
+            });
+            ui.on_on_sleep_set_bedtime({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move |time: SharedString| {
+                    app.borrow_mut().set_bedtime(time.as_str());
+                    refresh();
+                }
+            });
+            ui.on_on_sleep_cancel_bedtime({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().cancel_bedtime();
+                    refresh();
+                }
+            });
+            ui.on_on_sleep_correct({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move |hours: SharedString, minutes: SharedString| {
+                    app.borrow_mut()
+                        .correct_sleep(hours.as_str(), minutes.as_str());
+                    refresh();
+                }
+            });
+
+            ui.on_open_url({
+                let app = app.clone();
+                move |url: SharedString| app.borrow_mut().open_url(url.as_str())
+            });
+
+            ui.on_rule_field_changed({
+                let model = rule_model.clone();
+                move |index: i32, field: SharedString, value: SharedString| {
+                    let index = index as usize;
+                    let Some(mut rule) = model.row_data(index) else {
+                        return;
+                    };
+                    match field.as_str() {
+                        "name" => rule.name = value,
+                        "message" => rule.message = value,
+                        "which-timer" => rule.which_timer = value,
+                        "trigger-if" => rule.trigger_if = value,
+                        "trigger-hours" => rule.trigger_hours = value,
+                        "trigger-minutes" => rule.trigger_minutes = value,
+                        "tolerance-hours" => rule.tolerance_hours = value,
+                        "tolerance-minutes" => rule.tolerance_minutes = value,
+                        _ => return,
+                    }
+                    model.set_row_data(index, rule);
+                }
+            });
+            ui.on_rule_add({
+                let model = rule_model.clone();
+                move || model.push(blank_rule())
+            });
+            ui.on_rule_remove({
+                let model = rule_model.clone();
+                move |index: i32| {
+                    if index >= 0 {
+                        model.remove(index as usize);
+                    }
+                }
+            });
+            ui.on_rules_reset({
+                let app = app.clone();
+                let model = rule_model.clone();
+                move || {
+                    let configs = app.borrow().default_rule_configs();
+                    set_rule_rows(&model, configs);
+                }
+            });
+            ui.on_rules_save({
+                let app = app.clone();
+                let reporter = reporter.clone();
+                let model = rule_model.clone();
+                move || {
+                    let configs = read_rule_rows(&model);
+                    match app.borrow_mut().save_rules(configs) {
+                        Ok(()) => set_rule_rows(&model, app.borrow().rule_configs()),
+                        Err(message) => reporter.warning("Could not save rules", message, ""),
+                    }
+                }
+            });
+            ui.on_save_settings({
+                let app = app.clone();
+                let reporter = reporter.clone();
+                let weak = ui.as_weak();
+                let refresh_settings = refresh_settings.clone();
+                move || {
+                    let Some(ui) = weak.upgrade() else {
+                        return;
+                    };
+                    let result = app.borrow_mut().save_settings(
+                        ui.get_settings_theme().to_string(),
+                        ui.get_settings_notifications(),
+                        ui.get_settings_quiet_start().to_string(),
+                        ui.get_settings_quiet_end().to_string(),
+                    );
+                    match result {
+                        Ok(()) => refresh_settings(),
+                        Err(message) => {
+                            reporter.warning("Could not save settings", message, "");
+                        }
+                    }
+                }
+            });
+
+            refresh();
+            refresh_settings();
+            refresh_dashboard();
+        }
+        Err(e) => {
+            reporter.fatal("Failed to start Rhythm", format!("{e}"), error_details(&e));
+        }
+    }
+
+    ui.run().map_err(Error::PlatformError)
+}
+
+fn day_to_slint(day: &AppDayUsage) -> DayUsage {
+    DayUsage {
+        label: day.label.clone().into(),
+        work: day.work as i32,
+        paused: day.paused as i32,
+        sleep: day.sleep as i32,
+    }
+}
+
+fn report_to_slint(report: &report_history::ReportRecord) -> ReportItem {
+    ReportItem {
+        severity: report.severity.clone().into(),
+        title: report.title.clone().into(),
+        message: report.message.clone().into(),
+        timestamp: report.timestamp.clone().into(),
+    }
+}
+
+fn config_to_edit(config: &RuleConfig) -> RuleEdit {
+    RuleEdit {
+        id: config.id.clone().into(),
+        name: config.name.clone().into(),
+        message: config.message.clone().into(),
+        which_timer: config.which_timer.clone().into(),
+        trigger_if: config.trigger_if.clone().into(),
+        trigger_hours: config.trigger_hours.clone().into(),
+        trigger_minutes: config.trigger_minutes.clone().into(),
+        tolerance_hours: config.tolerance_hours.clone().into(),
+        tolerance_minutes: config.tolerance_minutes.clone().into(),
+    }
+}
+
+fn edit_to_config(edit: &RuleEdit) -> RuleConfig {
+    RuleConfig {
+        id: edit.id.to_string(),
+        name: edit.name.to_string(),
+        message: edit.message.to_string(),
+        which_timer: edit.which_timer.to_string(),
+        trigger_if: edit.trigger_if.to_string(),
+        trigger_hours: edit.trigger_hours.to_string(),
+        trigger_minutes: edit.trigger_minutes.to_string(),
+        tolerance_hours: edit.tolerance_hours.to_string(),
+        tolerance_minutes: edit.tolerance_minutes.to_string(),
+    }
+}
+
+fn blank_rule() -> RuleEdit {
+    RuleEdit {
+        id: "".into(),
+        name: "New rule".into(),
+        message: "".into(),
+        which_timer: "working".into(),
+        trigger_if: "more".into(),
+        trigger_hours: "0".into(),
+        trigger_minutes: "0".into(),
+        tolerance_hours: "0".into(),
+        tolerance_minutes: "0".into(),
+    }
+}
+
+fn set_rule_rows(model: &VecModel<RuleEdit>, configs: Vec<RuleConfig>) {
+    model.set_vec(configs.iter().map(config_to_edit).collect::<Vec<_>>());
+}
+
+fn read_rule_rows(model: &VecModel<RuleEdit>) -> Vec<RuleConfig> {
+    (0..model.row_count())
+        .filter_map(|index| model.row_data(index))
+        .map(|edit| edit_to_config(&edit))
+        .collect()
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     slint::android::init(app).unwrap();
-    run().unwrap();
+    if let Err(e) = run(true) {
+        report_fatal("Rhythm failed", &format!("{e}"), &error_details(&e));
+    }
 }

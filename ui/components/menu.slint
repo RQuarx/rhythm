@@ -1,0 +1,44 @@
+import { Button, Palette } from "std-widgets.slint";
+
+export struct Item {
+    icon: image,
+    text: string,
+}
+
+
+export component MenuBar inherits Rectangle {
+    in property <string> label;
+    in property <Orientation> orientation;
+    in-out property <int> current-page: 0;
+    in property <[Item]> items;
+
+    callback page-changed(int);
+
+    background: Palette.alternate-background;
+
+    FlexboxLayout {
+        flex-direction: root.orientation == vertical ? row : column;
+
+        spacing: 1rem;
+        padding: 1rem;
+
+        flex-wrap: no-wrap;
+        alignment: orientation == horizontal ? start : stretch;
+
+        if orientation == horizontal: Text {
+            text: label;
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        for item[index] in root.items: Button {
+            text: item.text;
+            icon: item.icon;
+
+            clicked => {
+                root.current-page = index;
+                root.page-changed(index);
+            }
+        }
+    }
+}

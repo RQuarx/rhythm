@@ -1,0 +1,126 @@
+import { Button, LineEdit, Palette } from "std-widgets.slint";
+
+export component ManualBedtimeDialog inherits Rectangle {
+    callback confirm(string);
+    callback cancel;
+
+    background: #00000080;
+
+    VerticalLayout {
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                min-width: 20rem;
+                background: Palette.background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 0.5rem;
+
+                VerticalLayout {
+                    padding: 2rem;
+                    spacing: 1rem;
+
+                    Text {
+                        text: "When did you go to bed?";
+                        font-weight: 700;
+                    }
+                    Text { text: "Enter the time as HH:MM."; }
+
+                    time-input := LineEdit {
+                        text: "23:00";
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 1rem;
+
+                        Button {
+                            text: "Cancel";
+                            clicked => { root.cancel(); }
+                        }
+                        Button {
+                            text: "OK";
+                            clicked => { root.confirm(time-input.text); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component CorrectionDialog inherits Rectangle {
+    in property <string> suggested-hours;
+    in property <string> suggested-minutes;
+    callback confirm(string, string);
+    callback cancel;
+
+    property <string> hours-text;
+    property <string> minutes-text;
+
+    changed suggested-hours => { root.hours-text = root.suggested-hours; }
+    changed suggested-minutes => { root.minutes-text = root.suggested-minutes; }
+
+    background: #00000080;
+
+    VerticalLayout {
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                min-width: 20rem;
+                background: Palette.background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 0.5rem;
+
+                VerticalLayout {
+                    padding: 2rem;
+                    spacing: 1rem;
+
+                    Text {
+                        text: "How long did you sleep?";
+                        font-weight: 700;
+                    }
+                    Text { text: "Adjust the computed duration if you were awake during the night."; }
+
+                    HorizontalLayout {
+                        spacing: 1rem;
+
+                        VerticalLayout {
+                            Text { text: "Hours"; }
+                            hours-input := LineEdit { text: root.hours-text; }
+                        }
+                        VerticalLayout {
+                            Text { text: "Minutes"; }
+                            minutes-input := LineEdit { text: root.minutes-text; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 1rem;
+
+                        Button {
+                            text: "Use computed";
+                            clicked => { root.confirm(root.suggested-hours, root.suggested-minutes); }
+                        }
+                        Button {
+                            text: "Cancel";
+                            clicked => { root.cancel(); }
+                        }
+                        Button {
+                            text: "Save";
+                            clicked => { root.confirm(hours-input.text, minutes-input.text); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,162 @@
+import { Button, Palette } from "std-widgets.slint";
+
+export enum ReportSeverity { Warning, Error, Fatal }
+
+export struct Report {
+    severity: ReportSeverity,
+    title: string,
+    message: string,
+    timestamp: string,
+    details: string,
+}
+
+component Details inherits VerticalLayout {
+    in property <string> text;
+    property <bool> expanded: false;
+
+    spacing: 0.5rem;
+
+    if root.text != "": Button {
+        text: root.expanded ? "Hide details" : "More details";
+        clicked => { root.expanded = !root.expanded; }
+    }
+
+    if root.expanded && root.text != "": Text {
+        text: root.text;
+        wrap: word-wrap;
+    }
+}
+
+export component WarningBanner inherits Rectangle {
+    in property <Report> report;
+    callback dismissed;
+
+    background: Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    border-radius: 0.5rem;
+
+    HorizontalLayout {
+        padding: 1rem;
+        spacing: 1rem;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 0.25rem;
+
+            Text {
+                text: root.report.title;
+                font-weight: 700;
+            }
+            Text {
+                text: root.report.message;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.report.timestamp;
+                font-size: 0.75rem;
+                opacity: 0.7;
+            }
+            Details { text: root.report.details; }
+        }
+
+        Button {
+            text: "Dismiss";
+            clicked => { root.dismissed(); }
+        }
+    }
+}
+
+export component ErrorDialog inherits Rectangle {
+    in property <Report> report;
+    callback dismissed;
+
+    background: #00000080;
+
+    VerticalLayout {
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                min-width: 20rem;
+                width: 90%;
+                max-width: 40rem;
+                background: Palette.background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 0.5rem;
+
+                VerticalLayout {
+                    padding: 2rem;
+                    spacing: 1rem;
+
+                    Text {
+                        text: root.report.title;
+                        font-size: 1.2rem;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.report.message;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.report.timestamp;
+                        font-size: 0.75rem;
+                        opacity: 0.7;
+                    }
+                    Details { text: root.report.details; }
+
+                    HorizontalLayout {
+                        alignment: end;
+
+                        Button {
+                            text: "OK";
+                            clicked => { root.dismissed(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component FatalScreen inherits Rectangle {
+    in property <Report> report;
+    callback quit;
+
+    background: Palette.background;
+
+    VerticalLayout {
+        padding: 2rem;
+        spacing: 1rem;
+        alignment: center;
+
+        Text {
+            text: root.report.title;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        Text {
+            text: root.report.message;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.report.timestamp;
+            font-size: 0.75rem;
+            opacity: 0.7;
+        }
+        Details { text: root.report.details; }
+
+        HorizontalLayout {
+            alignment: center;
+
+            Button {
+                text: "Quit";
+                clicked => { root.quit(); }
+            }
+        }
+    }
+}

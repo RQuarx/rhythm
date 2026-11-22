@@ -1,3 +1,67 @@
-export component SettingsPage inherits Rectangle {
+import { ScrollView, Button, ComboBox, LineEdit, Switch, Palette } from "std-widgets.slint";
 
+export component SettingsPage inherits Rectangle {
+    in-out property <string> theme;
+    in-out property <bool> notifications-enabled;
+    in-out property <string> quiet-start;
+    in-out property <string> quiet-end;
+
+    callback save-settings();
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+
+        VerticalLayout {
+            padding: 2rem;
+            spacing: 1rem;
+            alignment: start;
+
+            Text {
+                text: "Appearance";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Text { text: "Theme"; }
+            ComboBox {
+                model: ["System", "Dark", "Light"];
+                current-value <=> root.theme;
+            }
+
+            Rectangle { height: 1rem; }
+
+            Text {
+                text: "Notifications";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Switch {
+                text: "Enable rule notifications";
+                checked <=> root.notifications-enabled;
+            }
+
+            Text { text: "Quiet hours start (HH:MM)"; }
+            LineEdit {
+                text <=> root.quiet-start;
+            }
+
+            Text { text: "Quiet hours end (HH:MM)"; }
+            LineEdit {
+                text <=> root.quiet-end;
+            }
+
+            Rectangle { height: 1rem; }
+
+            HorizontalLayout {
+                alignment: end;
+
+                Button {
+                    text: "Save";
+                    clicked => { root.save-settings(); }
+                }
+            }
+        }
+    }
 }

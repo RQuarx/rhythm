@@ -1,3 +1,642 @@
-export component HomePage inherits Rectangle {
+import {
+    Palette,
+    Button,
+    ProgressIndicator,
+    ScrollView,
+} from "std-widgets.slint";
 
+export struct DayUsage {
+    label: string,
+    work: int,
+    paused: int,
+    sleep: int,
+}
+
+export struct ReportItem {
+    severity: string,
+    title: string,
+    message: string,
+    timestamp: string,
+}
+
+component Card inherits Rectangle {
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    min-width: 18rem;
+    min-height: 12rem;
+
+    border-width: 2px;
+    border-radius: 1rem;
+    border-color: Palette.border;
+    background: Palette.alternate-background;
+
+    @children
+}
+
+component TimeCard inherits Card {
+    in-out property <bool> running: false;
+    in-out property <bool> paused: false;
+
+    in property <int> max-running-time: 100;
+    in property <int> current-running-time: 50;
+
+    in property <string> end-label;
+
+    in property <string> activity-name;
+    in property <string> today-running-hour: "00h 00m";
+    in property <string> week-running-hour: "00h 00m";
+
+    callback on-pause();
+    callback on-unpause();
+    callback on-stop();
+    callback on-start();
+
+    background: Palette.background;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        StyledText {
+            min-height: 5rem;
+            text: @markdown("**Time spent \{activity-name} today: \{today-running-hour}**\n**Time spent \{activity-name} this week: \{week-running-hour}**\nStatus: \{paused ? " \{activity-name} paused" : running ? activity-name : "not \{activity-name}"}");
+        }
+
+        HorizontalLayout {
+            spacing: 1rem;
+
+            if running && !paused: Button {
+                icon: @image-url("../../assets/icons/pause.svg");
+                text: "Pause";
+
+                clicked => { root.paused = true; on-pause(); }
+            }
+
+            Button {
+                icon: running && !paused ? @image-url("../../assets/icons/stop.svg")
+                    : @image-url("../../assets/icons/play_arrow.svg");
+                text: running && !paused ? "Stop" : "Start";
+
+                clicked => {
+                    if (running && !paused) {
+                        root.running = false;
+                        on-stop();
+                    } else if (running && paused) {
+                        root.paused = false;
+                        on-unpause();
+                    } else {
+                        root.running = true;
+                        on-start();
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            ProgressIndicator {
+                progress: root.max-running-time > 0 ? root.current-running-time / root.max-running-time : 0;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                Text {
+                    text: end-label;
+                    font-size: 1rem;
+                }
+            }
+        }
+    }
+}
+
+component SleepCard inherits Card {
+    in-out property <bool> sleeping: false;
+
+    in property <int> min-sleeping-time: 25200;
+    in property <int> current-sleeping-time: 0;
+
+    in property <string> today-sleeping-hour: "00h 00m";
+    in property <string> week-sleeping-hour: "00h 00m";
+    in property <string> min-sleeping-hour: "07h 00m";
+
+    callback sleep-start();
+    callback sleep-wake-up();
+
+    background: Palette.background;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        StyledText {
+            min-height: 5rem;
+            text: @markdown("**Time spent sleeping today: \{today-sleeping-hour}**\n**Time spent sleeping this week: \{week-sleeping-hour}**\nStatus: \{sleeping ? "sleeping" : "awake"}");
+        }
+
+        HorizontalLayout {
+            spacing: 1rem;
+
+            if root.sleeping: Button {
+                text: "Woke up";
+                clicked => {
+                    root.sleeping = false;
+                    root.sleep-wake-up();
+                }
+            }
+            if !root.sleeping: Button {
+                text: "Going to bed";
+                clicked => {
+                    root.sleeping = true;
+                    root.sleep-start();
+                }
+            }
+        }
+
+        VerticalLayout {
+            ProgressIndicator {
+                progress: root.min-sleeping-time > 0 ? root.current-sleeping-time / root.min-sleeping-time : 0;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                Text {
+                    text: root.min-sleeping-hour;
+                    font-size: 1rem;
+                }
+            }
+        }
+    }
+}
+
+component UsageChartCard inherits Card {
+    in property <[DayUsage]> days;
+    in property <int> max-value: 1;
+    in property <int> work-target: 27000;
+    in property <int> sleep-target: 25200;
+    in-out property <bool> monthly;
+
+    callback toggle-period();
+
+    background: Palette.background;
+    min-height: 18rem;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        HorizontalLayout {
+            Text {
+                text: "Daily usage";
+                font-size: 1.2rem;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: root.monthly ? "Weekly" : "Monthly";
+                clicked => {
+                    root.monthly = !root.monthly;
+                    root.toggle-period();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 1rem;
+
+            Rectangle {
+                width: 0.75rem;
+                height: 0.75rem;
+                background: #63D0DF;
+            }
+
+            Text {
+                text: "Work";
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: 0.75rem;
+                height: 0.75rem;
+                background: #E5A83B;
+            }
+
+            Text {
+                text: "Break";
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: 0.75rem;
+                height: 0.75rem;
+                background: #8A7BD8;
+            }
+
+            Text {
+                text: "Sleep";
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+        }
+
+        plot := Rectangle {
+            vertical-stretch: 1;
+            min-height: 9rem;
+
+            property <length> plot-height: plot.height - 1.2rem;
+
+            if root.max-value > 0: Rectangle {
+                y: plot.plot-height - (root.work-target / root.max-value) * plot.plot-height;
+                width: 100%;
+                height: 1px;
+                background: #63D0DF80;
+            }
+            if root.max-value > 0: Rectangle {
+                y: plot.plot-height - (root.sleep-target / root.max-value) * plot.plot-height;
+                width: 100%;
+                height: 1px;
+                background: #8A7BD880;
+            }
+
+            HorizontalLayout {
+                y: 1.2rem;
+                height: plot.plot-height;
+                alignment: stretch;
+
+                for day[index] in root.days: VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: end;
+
+                    Rectangle {
+                        height: root.max-value > 0 ? (day.work / root.max-value) * plot.plot-height : 0px;
+                        background: #63D0DF;
+                        border-radius: 2px;
+                    }
+
+                    Rectangle {
+                        height: root.max-value > 0 ? (day.paused / root.max-value) * plot.plot-height : 0px;
+                        background: #E5A83B;
+                        border-radius: 2px;
+                    }
+
+                    Rectangle {
+                        height: root.max-value > 0 ? (day.sleep / root.max-value) * plot.plot-height : 0px;
+                        background: #8A7BD8;
+                        border-radius: 2px;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: stretch;
+
+                for day[index] in root.days: Text {
+                    horizontal-stretch: 1;
+                    text: Math.mod(index, root.monthly ? 5 : 1) == 0 ? day.label : "";
+                    font-size: 0.65rem;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+component StatsCard inherits Card {
+    in property <string> average-work;
+    in property <string> average-sleep;
+    in property <int> streak;
+    in property <int> work-goal;
+    in property <int> sleep-goal;
+
+    background: Palette.background;
+    min-width: 15rem;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        Text {
+            text: "Goals & averages";
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        Text {
+            text: "Avg work: \{average-work}\nAvg sleep: \{average-sleep}\nStreak: \{streak} day(s)";
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "Work goal \{work-goal}%";
+        }
+
+        ProgressIndicator {
+            progress: Math.max(0, Math.min(100, work-goal)) / 100;
+        }
+
+        Text {
+            text: "Sleep goal \{sleep-goal}%";
+        }
+
+        ProgressIndicator {
+            progress: Math.max(0, Math.min(100, sleep-goal)) / 100;
+        }
+    }
+}
+
+component QuickActionsCard inherits Card {
+    in-out property <bool> work-running;
+    in-out property <bool> work-paused;
+    in-out property <bool> sleeping;
+
+    callback on-work-pause();
+    callback on-work-unpause();
+    callback on-work-start();
+    callback on-work-stop();
+    callback on-sleep-start();
+    callback on-sleep-wake-up();
+
+    background: Palette.background;
+    min-width: 16rem;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        Text {
+            text: "Quick actions";
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        Button {
+            text: !work-running ? "Start working" : work-paused ? "Resume work" : "Pause work";
+            clicked => {
+                if (!work-running) {
+                    root.work-running = true;
+                    root.on-work-start();
+                } else if (work-paused) {
+                    root.work-paused = false;
+                    root.on-work-unpause();
+                } else {
+                    root.work-paused = true;
+                    root.on-work-pause();
+                }
+            }
+        }
+
+        Button {
+            text: "Stop working";
+            enabled: work-running;
+            clicked => {
+                root.work-running = false;
+                root.work-paused = false;
+                root.on-work-stop();
+            }
+        }
+
+        Button {
+            text: sleeping ? "Woke up" : "Going to bed";
+            clicked => {
+                root.sleeping = !root.sleeping;
+                if (root.sleeping) { root.on-sleep-start(); }
+                else { root.on-sleep-wake-up(); }
+            }
+        }
+    }
+}
+
+component RecentReportsCard inherits Card {
+    in property <[ReportItem]> reports;
+
+    background: Palette.background;
+    min-width: 20rem;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding: 1rem;
+        spacing: 0.75rem;
+
+        Text {
+            text: "Recent warnings";
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                spacing: 0.5rem;
+
+                if root.reports.length == 0: Text {
+                    text: "No recent warnings.";
+                    opacity: 0.7;
+                }
+
+                for report in root.reports: Rectangle {
+                    background: Palette.alternate-background;
+                    border-radius: 0.5rem;
+
+                    VerticalLayout {
+                        padding: 0.5rem;
+                        spacing: 0.25rem;
+
+                        Text {
+                            text: report.title;
+                            font-weight: 700;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: report.message;
+                            wrap: word-wrap;
+                            font-size: 0.85rem;
+                        }
+
+                        Text {
+                            text: report.timestamp;
+                            font-size: 0.7rem;
+                            opacity: 0.7;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component TimerCards inherits Rectangle {
+    in property <Orientation> orientation;
+
+    in property <string> today-working-hour <=> work-card.today-running-hour;
+    in property <string> week-working-hour <=> work-card.week-running-hour;
+    in property <string> max-working-hour <=> work-card.end-label;
+
+    in property <string> today-sleeping-hour <=> sleep-card.today-sleeping-hour;
+    in property <string> week-sleeping-hour <=> sleep-card.week-sleeping-hour;
+    in property <string> min-sleeping-hour <=> sleep-card.min-sleeping-hour;
+
+    in-out property <int> max-working-time <=> work-card.max-running-time;
+    in-out property <int> current-working-time <=> work-card.current-running-time;
+    in-out property <int> max-sleeping-time <=> sleep-card.min-sleeping-time;
+    in-out property <int> current-sleeping-time <=> sleep-card.current-sleeping-time;
+
+    in-out property <bool> work-running <=> work-card.running;
+    in-out property <bool> work-paused <=> work-card.paused;
+    in-out property <bool> sleeping <=> sleep-card.sleeping;
+
+    callback on-work-pause();
+    callback on-work-unpause();
+    callback on-work-start();
+    callback on-work-stop();
+    callback on-sleep-start();
+    callback on-sleep-wake-up();
+
+    FlexboxLayout {
+        flex-direction: root.orientation == horizontal ? row : column;
+        spacing: 1rem;
+        cross-axis-alignment: root.orientation == horizontal ? start : stretch;
+
+        work-card := TimeCard {
+            activity-name: "working";
+            horizontal-stretch: 1;
+
+            on-pause => { root.on-work-pause(); }
+            on-unpause => { root.on-work-unpause(); }
+            on-start => { root.on-work-start(); }
+            on-stop => { root.on-work-stop(); }
+        }
+
+        sleep-card := SleepCard {
+            horizontal-stretch: 1;
+
+            sleep-start => { root.on-sleep-start(); }
+            sleep-wake-up => { root.on-sleep-wake-up(); }
+        }
+    }
+}
+
+export component HomePage inherits Rectangle {
+    in property <string> today-working-hour;
+    in property <string> week-working-hour;
+    in property <string> max-working-hour;
+
+    in property <string> today-sleeping-hour;
+    in property <string> week-sleeping-hour;
+    in property <string> min-sleeping-hour;
+
+    in-out property <int> max-working-time;
+    in-out property <int> current-working-time;
+    in-out property <int> max-sleeping-time;
+    in-out property <int> current-sleeping-time;
+
+    in-out property <bool> work-running;
+    in-out property <bool> work-paused;
+    in-out property <bool> sleeping;
+
+    in property <[DayUsage]> usage-days;
+    in property <int> chart-max: 1;
+    in-out property <bool> monthly;
+
+    in property <string> average-work;
+    in property <string> average-sleep;
+    in property <int> streak;
+    in property <int> work-goal-percent;
+    in property <int> sleep-goal-percent;
+
+    in property <[ReportItem]> recent-reports;
+
+    in property <Orientation> orientation;
+
+    callback on-work-pause();
+    callback on-work-unpause();
+    callback on-work-start();
+    callback on-work-stop();
+    callback on-sleep-start();
+    callback on-sleep-wake-up();
+    callback toggle-period();
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        content-width: root.width;
+
+        FlexboxLayout {
+            padding: 1rem;
+            spacing: 1rem;
+            flex-direction: root.orientation == horizontal ? row : column;
+            flex-wrap: root.orientation == horizontal ? wrap : no-wrap;
+            alignment: root.orientation == horizontal ? stretch : start;
+
+            UsageChartCard {
+                width: root.width - 2rem;
+                days: root.usage-days;
+                max-value: root.chart-max;
+                work-target: root.max-working-time;
+                sleep-target: root.max-sleeping-time;
+                monthly <=> root.monthly;
+                toggle-period => { root.toggle-period(); }
+            }
+
+            TimerCards {
+                orientation: root.orientation;
+                today-working-hour: root.today-working-hour;
+                week-working-hour: root.week-working-hour;
+                max-working-hour: root.max-working-hour;
+                today-sleeping-hour: root.today-sleeping-hour;
+                week-sleeping-hour: root.week-sleeping-hour;
+                min-sleeping-hour: root.min-sleeping-hour;
+                max-working-time <=> root.max-working-time;
+                current-working-time <=> root.current-working-time;
+                max-sleeping-time <=> root.max-sleeping-time;
+                current-sleeping-time <=> root.current-sleeping-time;
+                work-running <=> root.work-running;
+                work-paused <=> root.work-paused;
+                sleeping <=> root.sleeping;
+
+                on-work-pause => { root.on-work-pause(); }
+                on-work-unpause => { root.on-work-unpause(); }
+                on-work-start => { root.on-work-start(); }
+                on-work-stop => { root.on-work-stop(); }
+                on-sleep-start => { root.on-sleep-start(); }
+                on-sleep-wake-up => { root.on-sleep-wake-up(); }
+            }
+
+            StatsCard {
+                average-work: root.average-work;
+                average-sleep: root.average-sleep;
+                streak: root.streak;
+                work-goal: root.work-goal-percent;
+                sleep-goal: root.sleep-goal-percent;
+            }
+
+            QuickActionsCard {
+                work-running <=> root.work-running;
+                work-paused <=> root.work-paused;
+                sleeping <=> root.sleeping;
+
+                on-work-pause => { root.on-work-pause(); }
+                on-work-unpause => { root.on-work-unpause(); }
+                on-work-start => { root.on-work-start(); }
+                on-work-stop => { root.on-work-stop(); }
+                on-sleep-start => { root.on-sleep-start(); }
+                on-sleep-wake-up => { root.on-sleep-wake-up(); }
+            }
+
+            RecentReportsCard {
+                reports: root.recent-reports;
+            }
+        }
+    }
 }

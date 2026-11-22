@@ -1,33 +1,195 @@
-import {
-    ModalNavigationDrawer,
-    IconButton,
-    MaterialWindow,
-    AppBar,
-    NavigationRail,
-    NavigationDrawer,
-    Horizontal,
-    VerticalDivider,
-} from "@material";
-import { HomePage } from "pages/home.slint";
-import { RulesPage } from "pages/rules.slint";
+import { Palette } from "std-widgets.slint";
+import { HomePage, DayUsage, ReportItem } from "pages/home.slint";
+import { RulesPage, RuleEdit } from "pages/rules.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { AboutPage } from "pages/about.slint";
+import { MenuBar } from "components/menu.slint";
+import {
+    Report,
+    ReportSeverity,
+    WarningBanner,
+    ErrorDialog,
+    FatalScreen,
+} from "components/reporter.slint";
+import {
+    ManualBedtimeDialog,
+    CorrectionDialog,
+} from "components/sleep_dialogs.slint";
 
-export component MainWindow inherits MaterialWindow {
-    preferred-width: 800px;
-    preferred-height: 600px;
-
+export component MainWindow inherits Window {
     in-out property <int> current-page: 0;
+
+    in property <string> app-version;
+    in property <bool> is-mobile;
+    in property <string> fatal-message;
+
+    in property <Report> active-report;
+    in property <int> active-report-id;
+    in property <bool> report-visible;
+
+    property <Orientation> orientation: is-mobile && root.width < 480px ? vertical : root.width < root.height ? vertical : horizontal;
+
     callback page-changed(int);
+    callback open-url(string);
+    callback report-dismissed(int);
+    callback fatal-quit();
+    callback tick();
 
-    Horizontal {
-        alignment: start;
+    Timer {
+        interval: 1s;
+        triggered => { root.tick(); }
+    }
 
-        NavigationRail {
-            alignment: start;
-            current-index <=> root.current-page;
+    changed settings-theme => {
+        Palette.color-scheme = root.settings-theme == "Dark" ? ColorScheme.dark
+            : root.settings-theme == "Light" ? ColorScheme.light : ColorScheme.unknown;
+    }
 
-            index_changed(index) => { page-changed(index); }
+    in property <string> today-working-hour;
+    in property <string> week-working-hour;
+    in property <string> max-working-hour;
+
+    in property <string> today-sleeping-hour;
+    in property <string> week-sleeping-hour;
+    in property <string> min-sleeping-hour;
+
+    in property <int> max-working-time;
+    in property <int> current-working-time;
+
+    in property <int> max-sleeping-time;
+    in property <int> current-sleeping-time;
+
+    in-out property <bool> work-running;
+    in-out property <bool> work-paused;
+    in-out property <bool> sleeping;
+
+    in property <[DayUsage]> usage-days;
+    in property <int> chart-max: 1;
+    in-out property <bool> monthly;
+
+    in property <string> average-work;
+    in property <string> average-sleep;
+    in property <int> streak;
+    in property <int> work-goal-percent;
+    in property <int> sleep-goal-percent;
+    in property <[ReportItem]> recent-reports;
+
+    in-out property <bool> sleep-need-bedtime;
+    in property <int> sleep-pending-seconds;
+    in property <string> sleep-pending-hours;
+    in property <string> sleep-pending-minutes;
+
+    in-out property <[RuleEdit]> rule-edits;
+
+    in-out property <string> settings-theme: "";
+    in-out property <bool> settings-notifications: true;
+    in-out property <string> settings-quiet-start: "22:00";
+    in-out property <string> settings-quiet-end: "07:00";
+
+    callback on-work-pause();
+    callback on-work-unpause();
+    callback on-work-start();
+    callback on-work-stop();
+
+    callback on-sleep-start();
+    callback on-sleep-wake-up();
+    callback on-sleep-set-bedtime(string);
+    callback on-sleep-cancel-bedtime();
+    callback on-sleep-correct(string, string);
+    callback toggle-period();
+
+    callback rule-field-changed(int, string, string);
+    callback rule-add();
+    callback rule-remove(int);
+    callback rules-save();
+    callback rules-reset();
+    callback save-settings();
+
+    FlexboxLayout {
+        x: root.orientation == horizontal ? 0 : root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+
+        width: root.orientation == horizontal
+             ? root.width : root.width - root.safe-area-insets.right - root.safe-area-insets.left;
+        height: root.height - root.safe-area-insets.bottom - root.safe-area-insets.top;
+
+        flex-direction: root.orientation == horizontal ? row : column;
+        flex-wrap: no-wrap;
+        alignment: stretch;
+
+        VerticalLayout {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            layout-order: root.orientation == horizontal ? 2 : 1;
+
+            if root.current-page == 0: HomePage {
+                orientation: root.orientation;
+                today-working-hour: root.today-working-hour;
+                week-working-hour: root.week-working-hour;
+                max-working-hour: root.max-working-hour;
+                today-sleeping-hour: root.today-sleeping-hour;
+                week-sleeping-hour: root.week-sleeping-hour;
+                min-sleeping-hour: root.min-sleeping-hour;
+                max-working-time: root.max-working-time;
+                current-working-time: root.current-working-time;
+                max-sleeping-time: root.max-sleeping-time;
+                current-sleeping-time: root.current-sleeping-time;
+                work-running <=> root.work-running;
+                work-paused <=> root.work-paused;
+                sleeping <=> root.sleeping;
+
+                usage-days: root.usage-days;
+                chart-max: root.chart-max;
+                monthly <=> root.monthly;
+                average-work: root.average-work;
+                average-sleep: root.average-sleep;
+                streak: root.streak;
+                work-goal-percent: root.work-goal-percent;
+                sleep-goal-percent: root.sleep-goal-percent;
+                recent-reports: root.recent-reports;
+
+                toggle-period => { root.toggle-period(); }
+
+                on-work-pause => { root.on-work-pause() }
+                on-work-unpause => { root.on-work-unpause() }
+                on-work-start => { root.on-work-start() }
+                on-work-stop => { root.on-work-stop() }
+                on-sleep-start => { root.on-sleep-start() }
+                on-sleep-wake-up => { root.on-sleep-wake-up() }
+            }
+
+            if root.current-page == 1: RulesPage {
+                rules <=> root.rule-edits;
+
+                field-changed(index, field, value) => { root.rule-field-changed(index, field, value); }
+                add-rule => { root.rule-add(); }
+                remove-rule(index) => { root.rule-remove(index); }
+                save-rules => { root.rules-save(); }
+                reset-rules => { root.rules-reset(); }
+            }
+            if root.current-page == 2: SettingsPage {
+                theme <=> root.settings-theme;
+                notifications-enabled <=> root.settings-notifications;
+                quiet-start <=> root.settings-quiet-start;
+                quiet-end <=> root.settings-quiet-end;
+
+                save-settings => { root.save-settings(); }
+            }
+            if root.current-page == 3: AboutPage {
+                version: app-version;
+                open-url(url) => {
+                    root.open-url(url)
+                }
+            }
+        }
+
+        MenuBar {
+            layout-order: root.orientation == horizontal ? 1 : 2;
+            orientation: root.orientation;
+            current-page <=> root.current-page;
+            label: "Rhythm";
+
+            page-changed(index) => { page-changed(index); }
 
             items: [
                 { icon: @image-url("../assets/icons/home.svg"), text: "Home" },
@@ -36,12 +198,51 @@ export component MainWindow inherits MaterialWindow {
                 { icon: @image-url("../assets/icons/info.svg"), text: "About" }
             ];
         }
+    }
 
-        VerticalDivider { }
+    if root.sleep-need-bedtime: ManualBedtimeDialog {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+        confirm(time) => { root.on-sleep-set-bedtime(time); }
+        cancel => { root.on-sleep-cancel-bedtime(); }
+    }
 
-        if root.current-page == 0: HomePage { }
-        if root.current-page == 1: RulesPage { }
-        if root.current-page == 2: SettingsPage { }
-        if root.current-page == 3: AboutPage { }
+    if root.sleep-pending-seconds > 0: CorrectionDialog {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+        suggested-hours: root.sleep-pending-hours;
+        suggested-minutes: root.sleep-pending-minutes;
+        confirm(hours, minutes) => { root.on-sleep-correct(hours, minutes); }
+        cancel => { root.on-sleep-correct(root.sleep-pending-hours, root.sleep-pending-minutes); }
+    }
+
+    if root.report-visible && root.active-report.severity == ReportSeverity.Warning: WarningBanner {
+        x: root.safe-area-insets.left + 1rem;
+        y: root.safe-area-insets.top + 1rem;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right - 2rem;
+        report: root.active-report;
+        dismissed => { root.report-dismissed(root.active-report-id); }
+    }
+
+    if root.report-visible && root.active-report.severity == ReportSeverity.Error: ErrorDialog {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+        report: root.active-report;
+        dismissed => { root.report-dismissed(root.active-report-id); }
+    }
+
+    if root.report-visible && root.active-report.severity == ReportSeverity.Fatal: FatalScreen {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+        report: root.active-report;
+        quit => { root.fatal-quit(); }
     }
 }

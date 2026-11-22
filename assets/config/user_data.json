@@ -1,3 +1,21 @@
 {
-    "version": 1
+    "version": 1,
+    "rules": [
+        {
+            "name": "Overwork detection",
+            "message": "You have worked too long, time to take a rest.",
+            "which-timer": "working",
+            "trigger-time": 27000,
+            "tolerance": 1800,
+            "trigger-if": "more"
+        },
+        {
+            "name": "Not enough sleep",
+            "message": "You haven't gotten enough sleep, you should sleep earlier this night.",
+            "which-timer": "sleep",
+            "trigger-time": 25200,
+            "tolerance": 0,
+            "trigger-if": "less"
+        }
+    ]
 }
