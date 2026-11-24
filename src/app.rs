@@ -924,6 +924,9 @@ fn build_rules(configs: &[RuleConfig]) -> Result<Vec<UserRulesJson>, String> {
             &config.trigger_minutes,
             "trigger time",
         )?;
+        if config.which_timer == "system" && trigger_time >= 24 * 60 * 60 {
+            return Err("System rules need a time of day between 00:00 and 23:59.".into());
+        }
         let tolerance = parse_duration_fields(
             &config.tolerance_hours,
             &config.tolerance_minutes,
@@ -1063,6 +1066,43 @@ mod tests {
             ..config
         };
         assert!(build_rules(&[invalid]).is_err());
+    }
+
+    #[test]
+    fn system_rules_use_a_clock_time() {
+        let config = RuleConfig {
+            id: "clock".into(),
+            name: "Clock rule".into(),
+            message: "Message".into(),
+            which_timer: "system".into(),
+            trigger_if: "more".into(),
+            trigger_hours: "23".into(),
+            trigger_minutes: "59".into(),
+            tolerance_hours: "0".into(),
+            tolerance_minutes: "5".into(),
+        };
+        let rules = build_rules(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(rules[0].trigger_time, 23 * 3600 + 59 * 60);
+
+        for (hours, minutes) in [("24", "0"), ("25", "0"), ("23", "60")] {
+            let invalid = RuleConfig {
+                trigger_hours: hours.into(),
+                trigger_minutes: minutes.into(),
+                ..config.clone()
+            };
+            assert!(
+                build_rules(&[invalid]).is_err(),
+                "{hours}:{minutes} should be rejected for a system rule"
+            );
+        }
+
+        let long_working = RuleConfig {
+            which_timer: "working".into(),
+            trigger_hours: "30".into(),
+            trigger_minutes: "0".into(),
+            ..config
+        };
+        assert!(build_rules(&[long_working]).is_ok());
     }
 
     struct NoReports;

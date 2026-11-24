@@ -17,6 +17,7 @@ export struct RuleEdit {
 // into the editable text.
 component RuleLineEdit inherits LineEdit {
     in property <string> value;
+    min-width: 0;
     init => { self.text = self.value; }
     changed value => {
         if self.text != self.value {
@@ -26,11 +27,11 @@ component RuleLineEdit inherits LineEdit {
 }
 
 component RuleComboBox inherits ComboBox {
-    in property <string> value;
-    init => { self.current-value = self.value; }
-    changed value => {
-        if self.current-value != self.value {
-            self.current-value = self.value;
+    in property <string> display;
+    init => { self.current-value = self.display; }
+    changed display => {
+        if self.current-value != self.display {
+            self.current-value = self.display;
         }
     }
 }
@@ -94,31 +95,52 @@ export component RulesPage inherits Rectangle {
 
                     Text { text: "Timer"; }
                     RuleComboBox {
-                        model: ["working", "sleep", "system"];
-                        value: rule.which-timer;
-                        selected(value) => { root.field-changed(index, "which-timer", value); }
+                        model: ["Working timer", "Sleep timer", "System clock"];
+                        display: rule.which-timer == "working" ? "Working timer"
+                            : (rule.which-timer == "sleep" ? "Sleep timer" : "System clock");
+                        selected(value) => {
+                            root.field-changed(index, "which-timer",
+                                value == "Working timer" ? "working"
+                                : (value == "Sleep timer" ? "sleep" : "system"));
+                        }
                     }
 
                     Text { text: "Condition"; }
                     RuleComboBox {
-                        model: ["more", "less", "same"];
-                        value: rule.trigger-if;
-                        selected(value) => { root.field-changed(index, "trigger-if", value); }
+                        model: ["After", "Before", "At"];
+                        display: rule.trigger-if == "more" ? "After"
+                            : (rule.trigger-if == "less" ? "Before" : "At");
+                        selected(value) => {
+                            root.field-changed(index, "trigger-if",
+                                value == "After" ? "more"
+                                : (value == "Before" ? "less" : "same"));
+                        }
                     }
 
-                    Text { text: "Trigger after"; }
+                    Text { text: rule.which-timer == "system" ? "Time of day (HH:MM)" : "Trigger after"; }
                     HorizontalLayout {
                         spacing: 0.5rem;
                         RuleLineEdit {
                             value: rule.trigger-hours;
                             edited(value) => { root.field-changed(index, "trigger-hours", value); }
                         }
-                        Text { text: "h"; vertical-alignment: center; }
+                        Text {
+                            text: rule.which-timer == "system" ? ":" : "h";
+                            vertical-alignment: center;
+                        }
                         RuleLineEdit {
                             value: rule.trigger-minutes;
                             edited(value) => { root.field-changed(index, "trigger-minutes", value); }
                         }
-                        Text { text: "m"; vertical-alignment: center; }
+                        if rule.which-timer != "system": Text {
+                            text: "m";
+                            vertical-alignment: center;
+                        }
+                    }
+                    if rule.which-timer == "system": Text {
+                        text: "Compares with the current clock time, not elapsed time. Tolerance is a duration.";
+                        wrap: word-wrap;
+                        opacity: 0.7;
                     }
 
                     Text { text: "Tolerance"; }
