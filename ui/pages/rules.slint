@@ -47,8 +47,12 @@ export component RulesPage inherits Rectangle {
     ScrollView {
         width: parent.width;
         height: parent.height;
+        horizontal-scrollbar-policy: always-off;
+        content-height: content.preferred-height;
 
-        VerticalLayout {
+        content := VerticalLayout {
+            width: min(parent.width, 58rem);
+            x: (parent.width - self.width) / 2;
             padding: 1rem;
             spacing: 1rem;
             alignment: start;

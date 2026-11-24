@@ -4,10 +4,46 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
-use chrono::{Local, Timelike};
+use chrono::{Local, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
+
+/// The first day of the week used by the dashboard and weekly totals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WeekStart {
+    #[default]
+    Monday,
+    Saturday,
+    Sunday,
+}
+
+impl WeekStart {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Monday => "Monday",
+            Self::Saturday => "Saturday",
+            Self::Sunday => "Sunday",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "Monday" => Some(Self::Monday),
+            "Saturday" => Some(Self::Saturday),
+            "Sunday" => Some(Self::Sunday),
+            _ => None,
+        }
+    }
+
+    pub fn weekday(self) -> Weekday {
+        match self {
+            Self::Monday => Weekday::Mon,
+            Self::Saturday => Weekday::Sat,
+            Self::Sunday => Weekday::Sun,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct AppearanceJson {
@@ -31,6 +67,24 @@ impl Default for NotificationsJson {
     }
 }
 
+fn default_usual_work_minutes() -> u16 {
+    7 * 60 + 30
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkJson {
+    #[serde(default = "default_usual_work_minutes")]
+    usual_minutes: u16,
+}
+
+impl Default for WorkJson {
+    fn default() -> Self {
+        Self {
+            usual_minutes: default_usual_work_minutes(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SettingsJson {
     // Keep reading the old misspelled key from existing config files.
@@ -38,6 +92,14 @@ struct SettingsJson {
     appearance: AppearanceJson,
     #[serde(default)]
     notifications: NotificationsJson,
+    #[serde(default)]
+    work: WorkJson,
+    #[serde(default = "default_week_start")]
+    week_start: String,
+}
+
+fn default_week_start() -> String {
+    WeekStart::default().label().to_string()
 }
 
 impl Default for SettingsJson {
@@ -47,6 +109,8 @@ impl Default for SettingsJson {
                 selected_theme: "Dark".to_string(),
             },
             notifications: NotificationsJson::default(),
+            work: WorkJson::default(),
+            week_start: default_week_start(),
         }
     }
 }
@@ -128,6 +192,26 @@ impl Settings {
         self.data.notifications.quiet_end = end;
     }
 
+    pub fn usual_work_minutes(&self) -> u16 {
+        self.data.work.usual_minutes
+    }
+
+    pub fn set_usual_work_minutes(&mut self, minutes: u16) {
+        self.data.work.usual_minutes = minutes;
+    }
+
+    pub fn usual_work_seconds(&self) -> u64 {
+        u64::from(self.usual_work_minutes()) * 60
+    }
+
+    pub fn week_start(&self) -> WeekStart {
+        WeekStart::parse(&self.data.week_start).unwrap_or_default()
+    }
+
+    pub fn set_week_start(&mut self, week_start: WeekStart) {
+        self.data.week_start = week_start.label().to_string();
+    }
+
     /// Whether rule reports should be shown right now.
     pub fn warnings_enabled(&self) -> bool {
         if !self.notifications_enabled() {
@@ -168,6 +252,12 @@ fn normalize(mut data: SettingsJson) -> SettingsJson {
         data.notifications.quiet_start = defaults.quiet_start;
         data.notifications.quiet_end = defaults.quiet_end;
     }
+    if data.work.usual_minutes == 0 || data.work.usual_minutes >= 24 * 60 {
+        data.work.usual_minutes = default_usual_work_minutes();
+    }
+    if WeekStart::parse(&data.week_start).is_none() {
+        data.week_start = default_week_start();
+    }
     data
 }
 
@@ -194,15 +284,21 @@ mod tests {
         let mut settings = Settings::parse(&path).unwrap();
         assert_eq!(settings.selected_theme(), "Light");
         assert_eq!(settings.quiet_hours(), (22 * 60, 7 * 60));
+        assert_eq!(settings.week_start(), WeekStart::Monday);
+        assert_eq!(settings.usual_work_minutes(), 7 * 60 + 30);
 
         settings.set_notifications_enabled(false);
         settings.set_quiet_hours(21 * 60, 6 * 60);
+        settings.set_week_start(WeekStart::Saturday);
+        settings.set_usual_work_minutes(8 * 60);
         settings.save_settings().unwrap();
 
         let reloaded = Settings::parse(&path).unwrap();
         assert_eq!(reloaded.selected_theme(), "Light");
         assert!(!reloaded.notifications_enabled());
         assert_eq!(reloaded.quiet_hours(), (21 * 60, 6 * 60));
+        assert_eq!(reloaded.week_start(), WeekStart::Saturday);
+        assert_eq!(reloaded.usual_work_minutes(), 8 * 60);
     }
 
     #[test]
@@ -216,12 +312,14 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(
             &path,
-            r#"{"appearance":{"selected_theme":"Neon"},"notifications":{"enabled":true,"quiet_start":9999,"quiet_end":8888}}"#,
+            r#"{"appearance":{"selected_theme":"Neon"},"notifications":{"enabled":true,"quiet_start":9999,"quiet_end":8888},"work":{"usual_minutes":9999},"week_start":"Caturday"}"#,
         )
         .unwrap();
 
         let settings = Settings::parse(&path).unwrap();
         assert_eq!(settings.selected_theme(), "System");
         assert_eq!(settings.quiet_hours(), (22 * 60, 7 * 60));
+        assert_eq!(settings.week_start(), WeekStart::Monday);
+        assert_eq!(settings.usual_work_minutes(), 7 * 60 + 30);
     }
 }

@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{Local, Timelike};
+use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Timelike};
 use thiserror::Error;
 use tracing::{error, info};
 
@@ -18,7 +18,6 @@ use crate::{
     widget, work,
 };
 
-const DEFAULT_WORK_THRESHOLD: u64 = 27_000;
 const DEFAULT_SLEEP_THRESHOLD: u64 = 25_200;
 const THEMES: [&str; 3] = ["System", "Dark", "Light"];
 const TIMERS: [&str; 3] = ["working", "sleep", "system"];
@@ -62,27 +61,69 @@ pub struct RuleConfig {
     pub tolerance_minutes: String,
 }
 
-#[derive(Clone, Copy)]
-pub enum UsagePeriod {
-    Week,
-    Month,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimelineKind {
+    Work,
+    Break,
+    Sleep,
+    ShortSleep,
 }
 
-impl UsagePeriod {
-    pub fn days(self) -> usize {
+impl TimelineKind {
+    /// Integer value exposed to Slint.
+    pub fn code(self) -> i32 {
         match self {
-            UsagePeriod::Week => 7,
-            UsagePeriod::Month => 30,
+            Self::Work => 0,
+            Self::Break => 1,
+            Self::Sleep => 2,
+            Self::ShortSleep => 3,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Work => "Work",
+            Self::Break => "Break",
+            Self::Sleep | Self::ShortSleep => "Sleep",
+        }
+    }
+
+    fn draw_order(self) -> u8 {
+        match self {
+            Self::Sleep | Self::ShortSleep => 0,
+            Self::Work => 1,
+            Self::Break => 2,
         }
     }
 }
 
-#[derive(Clone)]
-pub struct DayUsage {
-    pub label: String,
-    pub work: u64,
-    pub paused: u64,
-    pub sleep: u64,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineBlock {
+    pub kind: TimelineKind,
+    /// Seconds after local midnight.
+    pub from_secs: u32,
+    pub to_secs: u32,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineDay {
+    pub name: String,
+    pub today: bool,
+    pub work_label: String,
+    pub sleep_label: Option<String>,
+    /// Compact labels used when the columns are too narrow for the full text.
+    pub work_compact: String,
+    pub sleep_compact: Option<String>,
+    pub sleep_low: bool,
+    pub blocks: Vec<TimelineBlock>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimelineSnapshot {
+    pub days: Vec<TimelineDay>,
+    pub now_seconds: u32,
+    pub week_label: String,
 }
 
 #[derive(Default)]
@@ -119,13 +160,15 @@ pub struct AppSnapshot {
     pub notifications_enabled: bool,
     pub quiet_start: String,
     pub quiet_end: String,
+    pub week_start: String,
+    pub usual_work_hours: String,
 }
 
-/// Statistics shown on the dashboard, kept separate from the per-second
-/// snapshot so the dashboard does not need to write widget state.
+/// Statistics and timeline shown on the dashboard, kept separate from the
+/// per-second snapshot so the dashboard does not need to write widget state.
 #[derive(Default)]
 pub struct DashboardSnapshot {
-    pub chart_max: u64,
+    pub timeline: TimelineSnapshot,
     pub stats: DashboardStats,
 }
 
@@ -255,12 +298,9 @@ impl App {
             error!("Failed to reload reports: {e}");
         }
         self.drain_widget_commands();
-        let sleep = if self.sleep.has_pending() {
-            None
-        } else {
-            self.sleep.last_night_value()
-        };
-        self.evaluate(sleep);
+        // A pending night already counts with its button timestamps, so rules
+        // should see it before the correction dialog is resolved.
+        self.evaluate(self.sleep.last_night_value());
     }
 
     /// Applies commands queued by the homescreen widget.
@@ -357,10 +397,11 @@ impl App {
         }
     }
 
-    /// Stores a corrected sleep duration. Invalid input is reported instead of
-    /// silently falling back to the computed value.
+    /// Stores a corrected sleep duration. Blank fields keep the duration
+    /// computed from the button presses; other invalid input is reported.
     pub fn correct_sleep(&mut self, hours: &str, minutes: &str) -> Result<(), String> {
-        let Some(seconds) = parse_duration(hours, minutes) else {
+        let computed = self.sleep.pending_seconds();
+        let Some(seconds) = duration_or_computed(hours, minutes, computed) else {
             return Err("Enter hours and minutes (minutes must be below 60).".into());
         };
 
@@ -413,6 +454,8 @@ impl App {
         notifications_enabled: bool,
         quiet_start: String,
         quiet_end: String,
+        week_start: String,
+        usual_work_hours: String,
     ) -> Result<(), String> {
         if !THEMES.contains(&theme.as_str()) {
             return Err(format!("Unknown theme '{theme}'."));
@@ -421,29 +464,45 @@ impl App {
             .ok_or_else(|| "Quiet hours start must be HH:MM.".to_string())?;
         let end =
             parse_clock(&quiet_end).ok_or_else(|| "Quiet hours end must be HH:MM.".to_string())?;
+        let week_start = settings::WeekStart::parse(&week_start)
+            .ok_or_else(|| format!("Unknown week start '{week_start}'."))?;
+        let usual_work_minutes = parse_clock(&usual_work_hours)
+            .ok_or_else(|| "Usual working hours must be HH:MM.".to_string())?;
+        if usual_work_minutes == 0 {
+            return Err("Usual working hours must be greater than 00:00.".to_string());
+        }
 
         let previous = (
             self.settings.selected_theme().to_string(),
             self.settings.notifications_enabled(),
             self.settings.quiet_hours(),
+            self.settings.week_start(),
+            self.settings.usual_work_minutes(),
         );
         self.settings.set_selected_theme(theme);
         self.settings
             .set_notifications_enabled(notifications_enabled);
         self.settings.set_quiet_hours(start, end);
+        self.settings.set_week_start(week_start);
+        self.settings.set_usual_work_minutes(usual_work_minutes);
         if let Err(e) = self.settings.save_settings() {
             self.settings.set_selected_theme(previous.0);
             self.settings.set_notifications_enabled(previous.1);
             self.settings.set_quiet_hours(previous.2.0, previous.2.1);
+            self.settings.set_week_start(previous.3);
+            self.settings.set_usual_work_minutes(previous.4);
             return Err(e.to_string());
         }
         Ok(())
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
+        let today = Local::now().date_naive();
+        let week_start = self.week_start_date(today);
+        let week_end = week_start + ChronoDuration::days(6);
         let work_today = self.work.today_active();
-        let work_week = self.work.week_active();
-        let max_work = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
+        let work_week = self.work.active_between(week_start, week_end);
+        let max_work = self.settings.usual_work_seconds();
         let min_sleep = self.threshold("sleep", "less", DEFAULT_SLEEP_THRESHOLD);
         let current_sleep = if self.sleep.is_sleeping() {
             self.sleep.current_elapsed()
@@ -481,7 +540,7 @@ impl App {
             week_working_hour: format_duration(work_week),
             max_working_hour: format_duration(max_work),
             today_sleeping_hour: format_duration(self.sleep.today_total()),
-            week_sleeping_hour: format_duration(self.sleep.week_total()),
+            week_sleeping_hour: format_duration(self.sleep.total_between(week_start, week_end)),
             min_sleeping_hour: format_duration(min_sleep),
             max_working_time: max_work,
             current_working_time: work_today,
@@ -499,71 +558,144 @@ impl App {
             notifications_enabled: self.settings.notifications_enabled(),
             quiet_start: clock_text(quiet_start),
             quiet_end: clock_text(quiet_end),
+            week_start: self.settings.week_start().label().to_string(),
+            usual_work_hours: clock_text(self.settings.usual_work_minutes()),
         }
     }
 
-    pub fn dashboard_snapshot(&self, period: UsagePeriod) -> DashboardSnapshot {
-        let max_work = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
+    pub fn dashboard_snapshot(&self) -> DashboardSnapshot {
+        let today = Local::now().date_naive();
+        let week_start = self.week_start_date(today);
+        let week_end = week_start + ChronoDuration::days(6);
+        let work = self.work.series_between(week_start, week_end);
+        let sleep = self.sleep.series_between(week_start, week_end);
         let min_sleep = self.threshold("sleep", "less", DEFAULT_SLEEP_THRESHOLD);
-        let current_work = self.work.today_active();
-        DashboardSnapshot {
-            chart_max: self.chart_max(period, max_work, min_sleep),
-            stats: self.dashboard_stats(7, current_work, min_sleep),
-        }
-    }
 
-    pub fn usage_series(&self, period: UsagePeriod) -> Vec<DayUsage> {
-        let sleep = self.sleep.daily_totals();
-        self.work
-            .daily_series(period.days())
-            .into_iter()
-            .map(|(date, work, paused)| DayUsage {
-                label: date.format("%a %d").to_string(),
-                work,
-                paused,
-                sleep: sleep.get(&date).copied().unwrap_or(0),
-            })
-            .collect()
+        DashboardSnapshot {
+            timeline: self.build_timeline(today, week_start, &work, &sleep, min_sleep),
+            stats: self.dashboard_stats(today, &work, &sleep, min_sleep),
+        }
     }
 
     pub fn recent_reports(&self) -> Vec<report_history::ReportRecord> {
         self.report_history.reports().to_vec()
     }
 
-    fn chart_max(&self, period: UsagePeriod, work_target: u64, sleep_target: u64) -> u64 {
-        self.usage_series(period)
-            .iter()
-            .map(|day| day.work + day.paused + day.sleep)
-            .max()
-            .unwrap_or(0)
-            .max(work_target)
-            .max(sleep_target)
-            .max(1)
+    fn week_start_date(&self, today: NaiveDate) -> NaiveDate {
+        week_start_for(today, self.settings.week_start())
     }
 
-    fn dashboard_stats(&self, days: usize, current_work: u64, sleep_target: u64) -> DashboardStats {
-        let work_target = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
-        let series = self.usage_series(UsagePeriod::Week);
-        let window: Vec<&DayUsage> = series.iter().take(days).collect();
-        let observed_days = window
+    fn build_timeline(
+        &self,
+        today: NaiveDate,
+        week_start: NaiveDate,
+        work: &[(NaiveDate, u64, u64)],
+        sleep: &[(NaiveDate, u64)],
+        sleep_target: u64,
+    ) -> TimelineSnapshot {
+        let week_end = week_start + ChronoDuration::days(6);
+        let work_segments = self.work.segments_between(week_start, week_end);
+        let sleep_segments = self.sleep.segments_between(week_start, week_end);
+
+        let mut days = Vec::with_capacity(7);
+        for offset in 0..7usize {
+            let date = week_start + ChronoDuration::days(offset as i64);
+            let active = work[offset].1;
+            let sleep_seconds = sleep[offset].1;
+            let mut blocks = Vec::new();
+
+            for segment in sleep_segments.iter().filter(|segment| segment.date == date) {
+                let kind = if !segment.active && segment.seconds < sleep_target {
+                    TimelineKind::ShortSleep
+                } else {
+                    TimelineKind::Sleep
+                };
+                blocks.push(TimelineBlock {
+                    kind,
+                    from_secs: segment.from_secs,
+                    to_secs: segment.to_secs,
+                    detail: timeline_detail(kind, segment.from_secs, segment.to_secs),
+                });
+            }
+            for segment in work_segments.iter().filter(|segment| segment.date == date) {
+                let kind = if segment.active {
+                    TimelineKind::Work
+                } else {
+                    TimelineKind::Break
+                };
+                blocks.push(TimelineBlock {
+                    kind,
+                    from_secs: segment.from_secs,
+                    to_secs: segment.to_secs,
+                    detail: timeline_detail(kind, segment.from_secs, segment.to_secs),
+                });
+            }
+            blocks.sort_by_key(|block| (block.from_secs, block.kind.draw_order()));
+
+            days.push(TimelineDay {
+                name: date.format("%a").to_string(),
+                today: date == today,
+                work_label: format!("Work {}", duration_or_dash(active)),
+                sleep_label: (sleep_seconds > 0)
+                    .then(|| format!("Sleep {}", format_duration(sleep_seconds))),
+                work_compact: compact_or_dash(active),
+                sleep_compact: (sleep_seconds > 0).then(|| compact_duration(sleep_seconds)),
+                sleep_low: sleep_seconds > 0 && sleep_seconds < sleep_target,
+                blocks,
+            });
+        }
+
+        TimelineSnapshot {
+            days,
+            now_seconds: Local::now().num_seconds_from_midnight(),
+            week_label: format!(
+                "{} – {}",
+                week_start.format("%a %-d %b"),
+                week_end.format("%a %-d %b")
+            ),
+        }
+    }
+
+    fn dashboard_stats(
+        &self,
+        today: NaiveDate,
+        work: &[(NaiveDate, u64, u64)],
+        sleep: &[(NaiveDate, u64)],
+        sleep_target: u64,
+    ) -> DashboardStats {
+        let work_target = self.settings.usual_work_seconds();
+        let current_work = self.work.today_active();
+        let today_index = work
             .iter()
-            .position(|day| day.work > 0 || day.paused > 0 || day.sleep > 0)
-            .map(|first| window.len() - first)
+            .position(|(date, _, _)| *date == today)
+            .unwrap_or(work.len().saturating_sub(1));
+        let visible = today_index + 1;
+        let first_observed = (0..visible)
+            .find(|index| work[*index].1 > 0 || work[*index].2 > 0 || sleep[*index].1 > 0);
+        let observed_days = first_observed
+            .map(|first| visible - first)
             .unwrap_or(1)
             .max(1) as u64;
-        let average_work: u64 = window.iter().map(|day| day.work).sum::<u64>() / observed_days;
-        let average_sleep: u64 = window.iter().map(|day| day.sleep).sum::<u64>() / observed_days;
+        let average_work = (0..visible).map(|index| work[index].1).sum::<u64>() / observed_days;
+        let average_sleep = (0..visible).map(|index| sleep[index].1).sum::<u64>() / observed_days;
 
+        let recent_work = self.work.daily_series(60);
+        let recent_sleep: std::collections::HashMap<NaiveDate, u64> = self
+            .sleep
+            .series_between(today - ChronoDuration::days(59), today)
+            .into_iter()
+            .collect();
         let mut streak: u32 = 0;
-        for (index, day) in series.iter().rev().enumerate() {
-            if index == 0 && day.sleep == 0 {
+        for (index, (date, active, paused)) in recent_work.iter().rev().enumerate() {
+            let night = recent_sleep.get(date).copied().unwrap_or(0);
+            if index == 0 && night == 0 {
                 // Today's night may not be recorded yet; judge yesterday instead.
                 continue;
             }
-            if day.work == 0 && day.sleep == 0 {
+            if *active == 0 && *paused == 0 && night == 0 {
                 break;
             }
-            if day.work <= work_target && day.sleep >= sleep_target && day.sleep > 0 {
+            if *active <= work_target && night >= sleep_target && night > 0 {
                 streak += 1;
             } else {
                 break;
@@ -668,6 +800,49 @@ fn format_duration(seconds: u64) -> String {
     format!("{:02}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
 }
 
+fn week_start_for(today: NaiveDate, week_start: settings::WeekStart) -> NaiveDate {
+    let start = week_start.weekday();
+    let offset = (today.weekday().num_days_from_monday() + 7 - start.num_days_from_monday()) % 7;
+    today - ChronoDuration::days(offset as i64)
+}
+
+fn duration_or_dash(seconds: u64) -> String {
+    if seconds == 0 {
+        "–".to_string()
+    } else {
+        format_duration(seconds)
+    }
+}
+
+/// Short duration for the narrow timeline columns, for example `7h30`.
+fn compact_duration(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    match (hours, minutes) {
+        (0, minutes) => format!("{minutes}m"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, minutes) => format!("{hours}h{minutes:02}"),
+    }
+}
+
+fn compact_or_dash(seconds: u64) -> String {
+    if seconds == 0 {
+        "–".to_string()
+    } else {
+        compact_duration(seconds)
+    }
+}
+
+fn timeline_detail(kind: TimelineKind, from_secs: u32, to_secs: u32) -> String {
+    format!(
+        "{} {}–{} ({})",
+        kind.label(),
+        clock_text((from_secs / 60) as u16),
+        clock_text((to_secs / 60) as u16),
+        format_duration(u64::from(to_secs.saturating_sub(from_secs)))
+    )
+}
+
 /// The widget only displays minutes, so round second-based values to avoid
 /// rewriting its state file and calling JNI on every tick.
 fn widget_seconds(seconds: u64) -> u64 {
@@ -712,6 +887,16 @@ fn parse_duration(hours: &str, minutes: &str) -> Option<u64> {
     hours
         .checked_mul(3600)?
         .checked_add(minutes.checked_mul(60)?)
+}
+
+/// An empty correction means the user accepted the timestamps captured by the
+/// "Going to bed" and "Woke up" buttons.
+fn duration_or_computed(hours: &str, minutes: &str, computed: u64) -> Option<u64> {
+    if hours.trim().is_empty() && minutes.trim().is_empty() {
+        Some(computed)
+    } else {
+        parse_duration(hours, minutes)
+    }
 }
 
 fn parse_duration_fields(hours: &str, minutes: &str, label: &str) -> Result<u64, String> {
@@ -793,9 +978,49 @@ mod tests {
     }
 
     #[test]
+    fn blank_correction_uses_the_button_times() {
+        assert_eq!(duration_or_computed("", "", 27_000), Some(27_000));
+        assert_eq!(duration_or_computed("  ", "\t", 27_000), Some(27_000));
+        assert_eq!(duration_or_computed("7", "30", 1), Some(27_000));
+        assert_eq!(duration_or_computed("", "30", 27_000), None);
+    }
+
+    #[test]
     fn formats_durations() {
         assert_eq!(format_duration(0), "00h 00m");
         assert_eq!(format_duration(3720), "01h 02m");
+    }
+
+    #[test]
+    fn formats_compact_durations() {
+        assert_eq!(compact_duration(0), "0m");
+        assert_eq!(compact_duration(45 * 60), "45m");
+        assert_eq!(compact_duration(7 * 3600), "7h");
+        assert_eq!(compact_duration(7 * 3600 + 30 * 60), "7h30");
+        assert_eq!(compact_or_dash(0), "–");
+        assert_eq!(compact_or_dash(8 * 3600), "8h");
+    }
+
+    #[test]
+    fn weeks_start_on_the_configured_day() {
+        let monday = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let tuesday = monday + ChronoDuration::days(1);
+        let sunday = monday + ChronoDuration::days(6);
+
+        assert_eq!(week_start_for(tuesday, settings::WeekStart::Monday), monday);
+        assert_eq!(
+            week_start_for(tuesday, settings::WeekStart::Sunday),
+            monday - ChronoDuration::days(1)
+        );
+        assert_eq!(
+            week_start_for(tuesday, settings::WeekStart::Saturday),
+            monday - ChronoDuration::days(2)
+        );
+        assert_eq!(week_start_for(sunday, settings::WeekStart::Sunday), sunday);
+        assert_eq!(
+            week_start_for(monday, settings::WeekStart::Saturday),
+            monday - ChronoDuration::days(2)
+        );
     }
 
     #[test]
@@ -838,5 +1063,76 @@ mod tests {
             ..config
         };
         assert!(build_rules(&[invalid]).is_err());
+    }
+
+    struct NoReports;
+
+    impl ReportSink for NoReports {
+        fn report(&self, _: Severity, _: String, _: String, _: String) {}
+    }
+
+    fn app_at(dir: &std::path::Path) -> App {
+        App {
+            settings: settings::Settings::new(dir),
+            user_data: UserData::default_at(dir),
+            work: work::WorkTimer::new(dir),
+            sleep: sleep::SleepTracker::new(dir),
+            report_history: report_history::ReportHistory::new(dir),
+            evaluator: RuleEvaluator::new(),
+            reports: Box::new(NoReports),
+            widget_dir: dir.to_path_buf(),
+            need_bedtime: false,
+            manual_wake_time: None,
+        }
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-app-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn usual_work_hours_are_saved_and_drive_the_work_target() {
+        let dir = temp_dir("work-hours");
+        let mut app = app_at(&dir);
+        app.save_settings(
+            "Dark".into(),
+            true,
+            "22:00".into(),
+            "07:00".into(),
+            "Monday".into(),
+            "08:15".into(),
+        )
+        .unwrap();
+
+        let snapshot = app.snapshot();
+        assert_eq!(snapshot.usual_work_hours, "08:15");
+        assert_eq!(snapshot.max_working_hour, "08h 15m");
+        assert_eq!(snapshot.max_working_time, 8 * 3600 + 15 * 60);
+
+        let stored = settings::Settings::parse(&dir.join("settings.json")).unwrap();
+        assert_eq!(stored.usual_work_minutes(), 8 * 60 + 15);
+    }
+
+    #[test]
+    fn usual_work_hours_reject_zero_and_out_of_range_times() {
+        let dir = temp_dir("work-hours-invalid");
+        let mut app = app_at(&dir);
+        for value in ["00:00", "24:00", "noon"] {
+            let result = app.save_settings(
+                "Dark".into(),
+                true,
+                "22:00".into(),
+                "07:00".into(),
+                "Monday".into(),
+                value.into(),
+            );
+            assert!(result.is_err(), "{value} should be rejected");
+        }
     }
 }

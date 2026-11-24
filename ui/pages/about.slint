@@ -13,102 +13,102 @@ export component AboutPage inherits Rectangle {
     ScrollView {
         width: parent.width;
         height: parent.height;
+        horizontal-scrollbar-policy: always-off;
+        content-height: content.preferred-height;
 
-        HorizontalLayout {
-            VerticalLayout {
-                preferred-width: parent.width;
-                width: root.width;
-                padding: 5rem;
+        content := VerticalLayout {
+            width: min(parent.width, 54rem);
+            x: (parent.width - self.width) / 2;
+            padding: 2rem;
+            alignment: start;
+            spacing: 1rem;
+
+            HorizontalLayout {
+                alignment: center;
+
+                Image {
+                    width: 12rem;
+                    height: 12rem;
+                    source: @image-url("../../assets/icons/rhythm-logo-icon.svg");
+                    image-fit: contain;
+                }
+            }
+
+            Text {
+                horizontal-alignment: center;
+                text: "Rhythm";
+                font-size: 2rem;
+                font-weight: 700;
+            }
+
+            Text {
+                horizontal-alignment: center;
+                text: "v" + root.version;
+                font-weight: 400;
+            }
+
+            Text {
+                text: "An application that helps you manage your life's rhythm.";
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                font-weight: 400;
+            }
+
+            StyledText {
+                horizontal-alignment: center;
+                text: @markdown("**[Source code](https://github.com/RQuarx/rhythm)**");
+            }
+
+            HSeparator { }
+
+            Text {
+                text: "License";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "Copyright (C) 2026 Kei/RQuarx <RQuarx@protonmail.com>";
+                wrap: word-wrap;
+                font-weight: 400;
+            }
+
+            Text {
+                text: "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.";
+                font-weight: 400;
+                wrap: word-wrap;
+            }
+
+            Text {
+                wrap: word-wrap;
+                font-weight: 400;
+                text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
+            }
+
+            StyledText {
+                text: @markdown("You should have received a copy of the GNU General Public License along with this program. If not, see <<https://www.gnu.org/licenses/>>.");
+                link-clicked(link) => { root.open-url(link) }
+            }
+
+            HSeparator { }
+
+            Text {
+                text: "Credits";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Text {
+                font-weight: 400;
+                text: "Icons: Material Symbols by Google, Apache License 2.0.";
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
                 alignment: start;
-                spacing: 1rem;
 
-                HorizontalLayout {
-                    alignment: center;
-
-                    Image {
-                        width: 12rem;
-                        height: 12rem;
-                        source: @image-url("../../assets/icons/rhythm-logo-icon.svg");
-                        image-fit: contain;
-                    }
-                }
-
-                Text {
-                    horizontal-alignment: center;
-                    text: "Rhythm";
-                    font-size: 2rem;
-                    font-weight: 700;
-                }
-
-                Text {
-                    horizontal-alignment: center;
-                    text: "v" + root.version;
-                    font-weight: 400;
-                }
-
-                Text {
-                    text: "An application that helps you manage your life's rhythm.";
-                    wrap: word-wrap;
-                    horizontal-alignment: center;
-                    font-weight: 400;
-                }
-
-                StyledText {
-                    horizontal-alignment: center;
-                    text: @markdown("**[Source code](https://github.com/RQuarx/rhythm)**");
-                }
-
-                HSeparator { }
-
-                Text {
-                    text: "License";
-                    font-size: 1.5rem;
-                    font-weight: 600;
-                }
-
-                Text {
-                    text: "Copyright (C) 2026 Kei/RQuarx <RQuarx@protonmail.com>";
-                    wrap: word-wrap;
-                    font-weight: 400;
-                }
-
-                Text {
-                    text: "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.";
-                    font-weight: 400;
-                    wrap: word-wrap;
-                }
-
-                Text {
-                    wrap: word-wrap;
-                    font-weight: 400;
-                    text: "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.";
-                }
-
-                StyledText {
-                    text: @markdown("You should have received a copy of the GNU General Public License along with this program. If not, see <<https://www.gnu.org/licenses/>>.");
-                    link-clicked(link) => { root.open-url(link) }
-                }
-
-                HSeparator { }
-
-                Text {
-                    text: "Credits";
-                    font-size: 1.5rem;
-                    font-weight: 600;
-                }
-
-                Text {
-                    font-weight: 400;
-                    text: "Icons: Material Symbols by Google, Apache License 2.0.";
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    alignment: start;
-
-                    AboutSlint {
-                        width: 10rem;
-                    }
+                AboutSlint {
+                    width: 10rem;
                 }
             }
         }

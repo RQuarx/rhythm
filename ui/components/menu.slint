@@ -11,6 +11,7 @@ export component MenuBar inherits Rectangle {
     in property <Orientation> orientation;
     in-out property <int> current-page: 0;
     in property <[Item]> items;
+    in property <bool> compact;
 
     callback page-changed(int);
 
@@ -32,8 +33,9 @@ export component MenuBar inherits Rectangle {
         }
 
         for item[index] in root.items: Button {
-            text: item.text;
+            text: root.compact ? "" : item.text;
             icon: item.icon;
+            icon-size: root.compact ? 24px : 20px;
 
             clicked => {
                 root.current-page = index;

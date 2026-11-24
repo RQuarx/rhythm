@@ -5,14 +5,20 @@ export component SettingsPage inherits Rectangle {
     in-out property <bool> notifications-enabled;
     in-out property <string> quiet-start;
     in-out property <string> quiet-end;
+    in-out property <string> week-start;
+    in-out property <string> usual-work-hours;
 
     callback save-settings();
 
     ScrollView {
         width: parent.width;
         height: parent.height;
+        horizontal-scrollbar-policy: always-off;
+        content-height: content.preferred-height;
 
-        VerticalLayout {
+        content := VerticalLayout {
+            width: min(parent.width, 44rem);
+            x: (parent.width - self.width) / 2;
             padding: 2rem;
             spacing: 1rem;
             alignment: start;
@@ -27,6 +33,38 @@ export component SettingsPage inherits Rectangle {
             ComboBox {
                 model: ["System", "Dark", "Light"];
                 current-value <=> root.theme;
+            }
+
+            Rectangle { height: 1rem; }
+
+            Text {
+                text: "Week";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Text { text: "Week starts on"; }
+            ComboBox {
+                model: ["Monday", "Saturday", "Sunday"];
+                current-value <=> root.week-start;
+            }
+
+            Rectangle { height: 1rem; }
+
+            Text {
+                text: "Work";
+                font-size: 1.5rem;
+                font-weight: 600;
+            }
+
+            Text { text: "Usual working hours per day (HH:MM)"; }
+            LineEdit {
+                text <=> root.usual-work-hours;
+            }
+            Text {
+                text: "Used for the work timer goal and daily progress. Overwork warnings are set in Rules.";
+                wrap: word-wrap;
+                opacity: 0.7;
             }
 
             Rectangle { height: 1rem; }

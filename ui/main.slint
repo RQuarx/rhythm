@@ -1,5 +1,5 @@
 import { Palette } from "std-widgets.slint";
-import { HomePage, DayUsage, ReportItem } from "pages/home.slint";
+import { HomePage, TimelineDay, ReportItem } from "pages/home.slint";
 import { RulesPage, RuleEdit } from "pages/rules.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { AboutPage } from "pages/about.slint";
@@ -26,7 +26,8 @@ export component MainWindow inherits Window {
     in property <int> active-report-id;
     in property <bool> report-visible;
 
-    property <Orientation> orientation: is-mobile && root.width < 480px ? vertical : root.width < root.height ? vertical : horizontal;
+    property <bool> compact-window: root.width < 960px;
+    property <Orientation> orientation: root.compact-window ? vertical : horizontal;
 
     callback page-changed(int);
     callback open-url(string);
@@ -62,9 +63,9 @@ export component MainWindow inherits Window {
     in-out property <bool> work-paused;
     in-out property <bool> sleeping;
 
-    in property <[DayUsage]> usage-days;
-    in property <int> chart-max: 1;
-    in-out property <bool> monthly;
+    in property <[TimelineDay]> timeline-days;
+    in property <string> week-label;
+    in property <int> timeline-now-seconds;
 
     in property <string> average-work;
     in property <string> average-sleep;
@@ -85,6 +86,8 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-notifications: true;
     in-out property <string> settings-quiet-start: "22:00";
     in-out property <string> settings-quiet-end: "07:00";
+    in-out property <string> settings-week-start: "Monday";
+    in-out property <string> settings-usual-work-hours: "07:30";
 
     callback on-work-pause();
     callback on-work-unpause();
@@ -97,7 +100,6 @@ export component MainWindow inherits Window {
     callback on-sleep-cancel-bedtime();
     callback on-sleep-correct(string, string);
     callback on-sleep-discard();
-    callback toggle-period();
 
     callback rule-field-changed(int, string, string);
     callback rule-add();
@@ -124,7 +126,6 @@ export component MainWindow inherits Window {
             layout-order: root.orientation == horizontal ? 2 : 1;
 
             if root.current-page == 0: HomePage {
-                orientation: root.orientation;
                 today-working-hour: root.today-working-hour;
                 week-working-hour: root.week-working-hour;
                 max-working-hour: root.max-working-hour;
@@ -139,17 +140,16 @@ export component MainWindow inherits Window {
                 work-paused <=> root.work-paused;
                 sleeping <=> root.sleeping;
 
-                usage-days: root.usage-days;
-                chart-max: root.chart-max;
-                monthly <=> root.monthly;
+                timeline-days: root.timeline-days;
+                week-label: root.week-label;
+                timeline-now-seconds: root.timeline-now-seconds;
+                is-mobile: root.is-mobile;
                 average-work: root.average-work;
                 average-sleep: root.average-sleep;
                 streak: root.streak;
                 work-goal-percent: root.work-goal-percent;
                 sleep-goal-percent: root.sleep-goal-percent;
                 recent-reports: root.recent-reports;
-
-                toggle-period => { root.toggle-period(); }
 
                 on-work-pause => { root.on-work-pause() }
                 on-work-unpause => { root.on-work-unpause() }
@@ -173,6 +173,8 @@ export component MainWindow inherits Window {
                 notifications-enabled <=> root.settings-notifications;
                 quiet-start <=> root.settings-quiet-start;
                 quiet-end <=> root.settings-quiet-end;
+                week-start <=> root.settings-week-start;
+                usual-work-hours <=> root.settings-usual-work-hours;
 
                 save-settings => { root.save-settings(); }
             }
@@ -187,6 +189,8 @@ export component MainWindow inherits Window {
         MenuBar {
             layout-order: root.orientation == horizontal ? 1 : 2;
             orientation: root.orientation;
+            preferred-width: 12rem;
+            compact: root.orientation == vertical && root.width < 480px;
             current-page <=> root.current-page;
             label: "Rhythm";
 
@@ -218,7 +222,7 @@ export component MainWindow inherits Window {
         suggested-hours: root.sleep-pending-hours;
         suggested-minutes: root.sleep-pending-minutes;
         confirm(hours, minutes) => { root.on-sleep-correct(hours, minutes); }
-        cancel => { root.on-sleep-discard(); }
+        discard => { root.on-sleep-discard(); }
     }
 
     if root.report-visible && root.active-report.severity == ReportSeverity.Warning: WarningBanner {

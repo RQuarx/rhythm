@@ -5,11 +5,22 @@ import {
     ScrollView,
 } from "std-widgets.slint";
 
-export struct DayUsage {
-    label: string,
-    work: int,
-    paused: int,
-    sleep: int,
+export struct TimelineBlock {
+    kind: int,
+    from-seconds: int,
+    to-seconds: int,
+    detail: string,
+}
+
+export struct TimelineDay {
+    name: string,
+    today: bool,
+    work-label: string,
+    sleep-label: string,
+    work-compact: string,
+    sleep-compact: string,
+    sleep-low: bool,
+    blocks: [TimelineBlock],
 }
 
 export struct ReportItem {
@@ -170,14 +181,356 @@ component SleepCard inherits Card {
     }
 }
 
-component UsageChartCard inherits Card {
-    in property <[DayUsage]> days;
-    in property <int> max-value: 1;
-    in property <int> work-target: 27000;
-    in property <int> sleep-target: 25200;
-    in-out property <bool> monthly;
+component TimelineBlockView inherits Rectangle {
+    in property <TimelineBlock> block;
+    in property <int> day-index;
+    in property <length> plot-height;
+    in property <brush> fill;
 
-    callback toggle-period();
+    callback hovered(int, string, int, int, int);
+    callback unhovered(int);
+    callback selected(int, string, int, int, int);
+
+    property <int> block-key: root.day-index * 1000000 + root.block.from-seconds * 4 + root.block.kind;
+    property <length> block-top: (root.block.from-seconds / 86400) * root.plot-height;
+    property <length> block-bottom: (root.block.to-seconds / 86400) * root.plot-height;
+
+    x: 0;
+    width: 100%;
+    y: root.block-top;
+    height: root.block-bottom - root.block-top < 2px ? 2px : root.block-bottom - root.block-top;
+    background: root.fill;
+    border-radius: 2px;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+
+        changed has-hover => {
+            if (touch.has-hover) {
+                root.hovered(
+                    root.day-index,
+                    root.block.detail,
+                    root.block.from-seconds,
+                    root.block.to-seconds,
+                    root.block-key
+                );
+            } else {
+                root.unhovered(root.block-key);
+            }
+        }
+
+        clicked => {
+            root.selected(
+                root.day-index,
+                root.block.detail,
+                root.block.from-seconds,
+                root.block.to-seconds,
+                root.block-key
+            );
+        }
+    }
+}
+
+component TimelineDayColumn inherits Rectangle {
+    in property <TimelineDay> day;
+    in property <int> index;
+    in property <length> plot-top;
+    in property <length> plot-height;
+    in property <int> now-seconds;
+    in property <brush> work-color;
+    in property <brush> break-color;
+    in property <brush> sleep-color;
+    in property <brush> low-sleep-color;
+    in property <bool> compact;
+
+    callback block-hovered(int, string, int, int, int);
+    callback block-unhovered(int);
+    callback block-selected(int, string, int, int, int);
+    callback blank-hovered;
+    callback blank-clicked;
+
+    plot := Rectangle {
+        y: root.plot-top;
+        width: parent.width;
+        height: root.plot-height;
+        background: Palette.foreground.with-alpha(0.04);
+        border-radius: 6px;
+        clip: true;
+
+        if root.day.today: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: root.work-color;
+            opacity: 0.10;
+        }
+
+        blank := TouchArea {
+            changed has-hover => {
+                if (blank.has-hover) {
+                    root.blank-hovered();
+                }
+            }
+
+            clicked => { root.blank-clicked(); }
+        }
+
+        for block in root.day.blocks: TimelineBlockView {
+            block: block;
+            day-index: root.index;
+            plot-height: root.plot-height;
+            fill: block.kind == 0 ? root.work-color
+                : block.kind == 1 ? root.break-color
+                : block.kind == 3 ? root.low-sleep-color
+                : root.sleep-color;
+
+            hovered(day-index, detail, from-seconds, to-seconds, key) => {
+                root.block-hovered(day-index, detail, from-seconds, to-seconds, key);
+            }
+            unhovered(key) => { root.block-unhovered(key); }
+            selected(day-index, detail, from-seconds, to-seconds, key) => {
+                root.block-selected(day-index, detail, from-seconds, to-seconds, key);
+            }
+        }
+
+        if root.day.today: Rectangle {
+            y: (root.now-seconds / 86400) * root.plot-height;
+            width: parent.width;
+            height: 2px;
+            background: Palette.foreground;
+        }
+    }
+
+    Text {
+        y: root.plot-top + root.plot-height + 0.35rem;
+        width: parent.width;
+        height: 1rem;
+        text: root.day.name;
+        font-size: root.compact ? 0.72rem : 0.8rem;
+        font-weight: root.day.today ? 700 : 400;
+        horizontal-alignment: center;
+    }
+
+    if !root.compact: Text {
+        y: root.plot-top + root.plot-height + 1.35rem;
+        width: parent.width;
+        height: 0.9rem;
+        text: root.day.work-label;
+        font-size: 0.65rem;
+        opacity: 0.7;
+        horizontal-alignment: center;
+    }
+
+    if !root.compact && root.day.sleep-label != "": Text {
+        y: root.plot-top + root.plot-height + 1.95rem;
+        width: parent.width;
+        height: 0.9rem;
+        text: root.day.sleep-label;
+        font-size: 0.65rem;
+        color: root.day.sleep-low ? root.low-sleep-color : Palette.foreground;
+        opacity: root.day.sleep-low ? 1 : 0.7;
+        horizontal-alignment: center;
+    }
+
+    if root.compact: HorizontalLayout {
+        y: root.plot-top + root.plot-height + 1.15rem;
+        width: parent.width;
+        height: 0.85rem;
+        alignment: center;
+        spacing: 0.1rem;
+
+        Text {
+            text: "●";
+            font-size: 0.5rem;
+            color: root.work-color;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.day.work-compact;
+            font-size: 0.58rem;
+            opacity: 0.75;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.compact && root.day.sleep-compact != "": HorizontalLayout {
+        y: root.plot-top + root.plot-height + 1.75rem;
+        width: parent.width;
+        height: 0.85rem;
+        alignment: center;
+        spacing: 0.1rem;
+
+        Text {
+            text: "●";
+            font-size: 0.5rem;
+            color: root.day.sleep-low ? root.low-sleep-color : root.sleep-color;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.day.sleep-compact;
+            font-size: 0.58rem;
+            color: root.day.sleep-low ? root.low-sleep-color : Palette.foreground;
+            opacity: root.day.sleep-low ? 1 : 0.75;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component WeekTimeline inherits Rectangle {
+    in property <[TimelineDay]> days;
+    in property <int> now-seconds;
+    in property <brush> work-color;
+    in property <brush> break-color;
+    in property <brush> sleep-color;
+    in property <brush> low-sleep-color;
+    in property <bool> tap-mode;
+
+    property <length> plot-top: 0.75rem;
+    property <length> left: 2.4rem;
+    property <length> right: 0.15rem;
+    property <length> gap: 0.55rem;
+    property <length> plot-height: root.height - root.plot-top - 2.85rem;
+    property <length> plot-width: root.width - root.left - root.right;
+    property <length> raw-column-width: (root.plot-width - root.gap * 6) / 7;
+    property <length> column-width: root.raw-column-width < 8px ? 8px : root.raw-column-width;
+    property <bool> compact: root.column-width < 5.25rem;
+    property <[string]> hour-labels: ["00", "03", "06", "09", "12", "15", "18", "21", "24"];
+
+    property <string> hover-detail: "";
+    property <int> hover-day: 0;
+    property <int> hover-from: 0;
+    property <int> hover-key: -1;
+    property <string> selected-detail: "";
+    property <int> selected-day: 0;
+    property <int> selected-from: 0;
+    property <int> selected-key: -1;
+
+    property <string> tooltip-detail: root.hover-detail != "" ? root.hover-detail : root.selected-detail;
+    property <int> tooltip-day: root.hover-detail != "" ? root.hover-day : root.selected-day;
+    property <int> tooltip-from: root.hover-detail != "" ? root.hover-from : root.selected-from;
+    property <bool> tooltip-visible: root.tooltip-detail != "";
+    property <length> tooltip-width: 15.5rem;
+    property <length> tooltip-center: root.left + root.tooltip-day * (root.column-width + root.gap) + root.column-width / 2;
+    property <length> tooltip-x: root.tooltip-center < root.tooltip-width / 2 ? 0px
+        : root.tooltip-center + root.tooltip-width / 2 > root.width ? root.width - root.tooltip-width
+        : root.tooltip-center - root.tooltip-width / 2;
+    property <length> tooltip-anchor-y: root.plot-top + (root.tooltip-from / 86400) * root.plot-height;
+    property <length> tooltip-y: root.tooltip-anchor-y < 2.6rem ? 0.15rem
+        : root.tooltip-anchor-y + 2.2rem > root.height ? root.height - 2.35rem
+        : root.tooltip-anchor-y - 2.3rem;
+
+    for label[index] in root.hour-labels: Rectangle {
+        x: root.left;
+        y: root.plot-top + (index * 3 / 24) * root.plot-height;
+        width: root.plot-width;
+        height: 1px;
+        background: Palette.foreground.with-alpha(0.12);
+    }
+
+    for label[index] in root.hour-labels: Text {
+        x: 0;
+        y: root.plot-top + (index * 3 / 24) * root.plot-height - 0.45rem;
+        width: root.left - 0.45rem;
+        height: 0.9rem;
+        text: label;
+        font-size: 0.65rem;
+        opacity: 0.55;
+        horizontal-alignment: TextHorizontalAlignment.right;
+    }
+
+    for day[index] in root.days: TimelineDayColumn {
+        x: root.left + index * (root.column-width + root.gap);
+        y: 0;
+        width: root.column-width;
+        height: root.height;
+        day: day;
+        index: index;
+        plot-top: root.plot-top;
+        plot-height: root.plot-height;
+        now-seconds: root.now-seconds;
+        work-color: root.work-color;
+        break-color: root.break-color;
+        sleep-color: root.sleep-color;
+        low-sleep-color: root.low-sleep-color;
+        compact: root.compact;
+
+        block-hovered(day-index, detail, from-seconds, to-seconds, key) => {
+            if (!root.tap-mode) {
+                root.hover-detail = detail;
+                root.hover-day = day-index;
+                root.hover-from = from-seconds;
+                root.hover-key = key;
+            }
+        }
+        block-unhovered(key) => {
+            if (!root.tap-mode && root.hover-key == key) {
+                root.hover-detail = "";
+                root.hover-key = -1;
+            }
+        }
+        blank-hovered => {
+            if (!root.tap-mode) {
+                root.hover-detail = "";
+                root.hover-key = -1;
+            }
+        }
+        block-selected(day-index, detail, from-seconds, to-seconds, key) => {
+            if (root.tap-mode) {
+                if (root.selected-key == key) {
+                    root.selected-key = -1;
+                    root.selected-detail = "";
+                    root.selected-day = 0;
+                    root.selected-from = 0;
+                } else {
+                    root.selected-key = key;
+                    root.selected-detail = detail;
+                    root.selected-day = day-index;
+                    root.selected-from = from-seconds;
+                }
+            }
+        }
+        blank-clicked => {
+            if (root.tap-mode) {
+                root.selected-key = -1;
+                root.selected-detail = "";
+            }
+        }
+    }
+
+    if root.tooltip-visible: Rectangle {
+        x: root.tooltip-x;
+        y: root.tooltip-y;
+        width: root.tooltip-width;
+        height: 2rem;
+        background: Palette.alternate-background;
+        border-width: 1px;
+        border-color: Palette.border;
+        border-radius: 0.4rem;
+
+        Text {
+            x: 0.5rem;
+            y: 0;
+            width: parent.width - 1rem;
+            height: parent.height;
+            text: root.tooltip-detail;
+            font-size: 0.75rem;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component UsageChartCard inherits Card {
+    in property <[TimelineDay]> days;
+    in property <string> week-label;
+    in property <int> now-seconds;
+    in property <bool> is-mobile;
+
+    property <brush> work-color: Palette.accent-background;
+    property <brush> break-color: Palette.border;
+    property <brush> sleep-color: Palette.color-scheme == ColorScheme.dark ? #63C98A : #2E7D5B;
+    property <brush> low-sleep-color: Palette.color-scheme == ColorScheme.dark ? #F2B84B : #B7791F;
 
     background: Palette.background;
     min-height: 18rem;
@@ -187,126 +540,102 @@ component UsageChartCard inherits Card {
         padding: 1rem;
         spacing: 0.75rem;
 
-        HorizontalLayout {
-            Text {
-                text: "Daily usage";
-                font-size: 1.2rem;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-            }
-
-            Button {
-                text: root.monthly ? "Weekly" : "Monthly";
-                clicked => {
-                    root.monthly = !root.monthly;
-                    root.toggle-period();
-                }
-            }
+        Text {
+            text: "Your week, hour by hour";
+            font-size: 1.2rem;
+            font-weight: 700;
         }
 
-        HorizontalLayout {
-            spacing: 1rem;
-
-            Rectangle {
-                width: 0.75rem;
-                height: 0.75rem;
-                background: #63D0DF;
-            }
-
-            Text {
-                text: "Work";
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                width: 0.75rem;
-                height: 0.75rem;
-                background: #E5A83B;
-            }
-
-            Text {
-                text: "Break";
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                width: 0.75rem;
-                height: 0.75rem;
-                background: #8A7BD8;
-            }
-
-            Text {
-                text: "Sleep";
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-            }
+        Text {
+            text: root.week-label;
+            font-size: 0.85rem;
+            opacity: 0.65;
         }
 
-        plot := Rectangle {
-            vertical-stretch: 1;
-            min-height: 9rem;
-
-            property <length> plot-height: plot.height - 1.2rem;
-
-            if root.max-value > 0: Rectangle {
-                y: plot.plot-height - (root.work-target / root.max-value) * plot.plot-height;
-                width: 100%;
-                height: 1px;
-                background: #63D0DF80;
-            }
-            if root.max-value > 0: Rectangle {
-                y: plot.plot-height - (root.sleep-target / root.max-value) * plot.plot-height;
-                width: 100%;
-                height: 1px;
-                background: #8A7BD880;
-            }
+        FlexboxLayout {
+            spacing: 0.75rem;
+            flex-direction: row;
+            flex-wrap: wrap;
 
             HorizontalLayout {
-                y: 1.2rem;
-                height: plot.plot-height;
-                alignment: stretch;
+                spacing: 0.3rem;
+                alignment: center;
 
-                for day[index] in root.days: VerticalLayout {
-                    horizontal-stretch: 1;
-                    alignment: end;
+                Rectangle {
+                    width: 0.75rem;
+                    height: 0.75rem;
+                    background: root.work-color;
+                    border-radius: 2px;
+                }
 
-                    Rectangle {
-                        height: root.max-value > 0 ? (day.work / root.max-value) * plot.plot-height : 0px;
-                        background: #63D0DF;
-                        border-radius: 2px;
-                    }
-
-                    Rectangle {
-                        height: root.max-value > 0 ? (day.paused / root.max-value) * plot.plot-height : 0px;
-                        background: #E5A83B;
-                        border-radius: 2px;
-                    }
-
-                    Rectangle {
-                        height: root.max-value > 0 ? (day.sleep / root.max-value) * plot.plot-height : 0px;
-                        background: #8A7BD8;
-                        border-radius: 2px;
-                    }
+                Text {
+                    text: "Work";
+                    vertical-alignment: center;
                 }
             }
 
             HorizontalLayout {
-                alignment: stretch;
+                spacing: 0.3rem;
+                alignment: center;
 
-                for day[index] in root.days: Text {
-                    horizontal-stretch: 1;
-                    text: Math.mod(index, root.monthly ? 5 : 1) == 0 ? day.label : "";
-                    font-size: 0.65rem;
-                    horizontal-alignment: center;
+                Rectangle {
+                    width: 0.75rem;
+                    height: 0.75rem;
+                    background: root.break-color;
+                    border-radius: 2px;
+                }
+
+                Text {
+                    text: "Break";
+                    vertical-alignment: center;
                 }
             }
+
+            HorizontalLayout {
+                spacing: 0.3rem;
+                alignment: center;
+
+                Rectangle {
+                    width: 0.75rem;
+                    height: 0.75rem;
+                    background: root.sleep-color;
+                    border-radius: 2px;
+                }
+
+                Text {
+                    text: "Sleep";
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0.3rem;
+                alignment: center;
+
+                Rectangle {
+                    width: 0.75rem;
+                    height: 0.75rem;
+                    background: root.low-sleep-color;
+                    border-radius: 2px;
+                }
+
+                Text {
+                    text: "Short sleep";
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        WeekTimeline {
+            width: 100%;
+            height: root.is-mobile ? 420px : 350px;
+            days: root.days;
+            now-seconds: root.now-seconds;
+            work-color: root.work-color;
+            break-color: root.break-color;
+            sleep-color: root.sleep-color;
+            low-sleep-color: root.low-sleep-color;
+            tap-mode: root.is-mobile;
         }
     }
 }
@@ -368,6 +697,7 @@ component QuickActionsCard inherits Card {
 
     background: Palette.background;
     min-width: 16rem;
+    min-height: 0;
 
     VerticalLayout {
         padding: 1rem;
@@ -379,38 +709,50 @@ component QuickActionsCard inherits Card {
             font-weight: 700;
         }
 
-        Button {
-            text: !work-running ? "Start working" : work-paused ? "Resume work" : "Pause work";
-            clicked => {
-                if (!work-running) {
-                    root.work-running = true;
-                    root.on-work-start();
-                } else if (work-paused) {
-                    root.work-paused = false;
-                    root.on-work-unpause();
-                } else {
-                    root.work-paused = true;
-                    root.on-work-pause();
+        FlexboxLayout {
+            flex-wrap: wrap;
+            alignment: stretch;
+            spacing: 0.75rem;
+
+            Button {
+                horizontal-stretch: 1;
+                min-width: 9rem;
+                text: !work-running ? "Start working" : work-paused ? "Resume work" : "Pause work";
+                clicked => {
+                    if (!work-running) {
+                        root.work-running = true;
+                        root.on-work-start();
+                    } else if (work-paused) {
+                        root.work-paused = false;
+                        root.on-work-unpause();
+                    } else {
+                        root.work-paused = true;
+                        root.on-work-pause();
+                    }
                 }
             }
-        }
 
-        Button {
-            text: "Stop working";
-            enabled: work-running;
-            clicked => {
-                root.work-running = false;
-                root.work-paused = false;
-                root.on-work-stop();
+            Button {
+                horizontal-stretch: 1;
+                min-width: 9rem;
+                text: "Stop working";
+                enabled: work-running;
+                clicked => {
+                    root.work-running = false;
+                    root.work-paused = false;
+                    root.on-work-stop();
+                }
             }
-        }
 
-        Button {
-            text: sleeping ? "Woke up" : "Going to bed";
-            clicked => {
-                root.sleeping = !root.sleeping;
-                if (root.sleeping) { root.on-sleep-start(); }
-                else { root.on-sleep-wake-up(); }
+            Button {
+                horizontal-stretch: 1;
+                min-width: 9rem;
+                text: sleeping ? "Woke up" : "Going to bed";
+                clicked => {
+                    root.sleeping = !root.sleeping;
+                    if (root.sleeping) { root.on-sleep-start(); }
+                    else { root.on-sleep-wake-up(); }
+                }
             }
         }
     }
@@ -420,8 +762,7 @@ component RecentReportsCard inherits Card {
     in property <[ReportItem]> reports;
 
     background: Palette.background;
-    min-width: 20rem;
-    horizontal-stretch: 1;
+    min-width: 18rem;
 
     VerticalLayout {
         padding: 1rem;
@@ -477,7 +818,7 @@ component RecentReportsCard inherits Card {
 }
 
 component TimerCards inherits Rectangle {
-    in property <Orientation> orientation;
+    in property <bool> two-column;
 
     in property <string> today-working-hour <=> work-card.today-running-hour;
     in property <string> week-working-hour <=> work-card.week-running-hour;
@@ -504,9 +845,11 @@ component TimerCards inherits Rectangle {
     callback on-sleep-wake-up();
 
     FlexboxLayout {
-        flex-direction: root.orientation == horizontal ? row : column;
+        flex-direction: root.two-column ? row : column;
+        flex-wrap: no-wrap;
         spacing: 1rem;
-        cross-axis-alignment: root.orientation == horizontal ? start : stretch;
+        alignment: root.two-column ? stretch : start;
+        cross-axis-alignment: stretch;
 
         work-card := TimeCard {
             activity-name: "working";
@@ -545,9 +888,10 @@ export component HomePage inherits Rectangle {
     in-out property <bool> work-paused;
     in-out property <bool> sleeping;
 
-    in property <[DayUsage]> usage-days;
-    in property <int> chart-max: 1;
-    in-out property <bool> monthly;
+    in property <[TimelineDay]> timeline-days;
+    in property <string> week-label;
+    in property <int> timeline-now-seconds;
+    in property <bool> is-mobile;
 
     in property <string> average-work;
     in property <string> average-sleep;
@@ -557,7 +901,7 @@ export component HomePage inherits Rectangle {
 
     in property <[ReportItem]> recent-reports;
 
-    in property <Orientation> orientation;
+    property <bool> two-column: root.width >= 760px;
 
     callback on-work-pause();
     callback on-work-unpause();
@@ -565,32 +909,45 @@ export component HomePage inherits Rectangle {
     callback on-work-stop();
     callback on-sleep-start();
     callback on-sleep-wake-up();
-    callback toggle-period();
 
     ScrollView {
         width: parent.width;
         height: parent.height;
-        content-width: root.width;
+        horizontal-scrollbar-policy: always-off;
+        content-height: content.preferred-height;
 
-        FlexboxLayout {
+        content := VerticalLayout {
+            width: min(parent.width, 77rem);
+            x: (parent.width - self.width) / 2;
             padding: 1rem;
             spacing: 1rem;
-            flex-direction: root.orientation == horizontal ? row : column;
-            flex-wrap: root.orientation == horizontal ? wrap : no-wrap;
-            alignment: root.orientation == horizontal ? stretch : start;
+            alignment: start;
+
+            QuickActionsCard {
+                width: 100%;
+                work-running <=> root.work-running;
+                work-paused <=> root.work-paused;
+                sleeping <=> root.sleeping;
+
+                on-work-pause => { root.on-work-pause(); }
+                on-work-unpause => { root.on-work-unpause(); }
+                on-work-start => { root.on-work-start(); }
+                on-work-stop => { root.on-work-stop(); }
+                on-sleep-start => { root.on-sleep-start(); }
+                on-sleep-wake-up => { root.on-sleep-wake-up(); }
+            }
 
             UsageChartCard {
-                width: root.width - 2rem;
-                days: root.usage-days;
-                max-value: root.chart-max;
-                work-target: root.max-working-time;
-                sleep-target: root.max-sleeping-time;
-                monthly <=> root.monthly;
-                toggle-period => { root.toggle-period(); }
+                width: 100%;
+                days: root.timeline-days;
+                week-label: root.week-label;
+                now-seconds: root.timeline-now-seconds;
+                is-mobile: root.is-mobile;
             }
 
             TimerCards {
-                orientation: root.orientation;
+                width: 100%;
+                two-column: root.two-column;
                 today-working-hour: root.today-working-hour;
                 week-working-hour: root.week-working-hour;
                 max-working-hour: root.max-working-hour;
@@ -614,6 +971,7 @@ export component HomePage inherits Rectangle {
             }
 
             StatsCard {
+                width: 100%;
                 average-work: root.average-work;
                 average-sleep: root.average-sleep;
                 streak: root.streak;
@@ -621,20 +979,9 @@ export component HomePage inherits Rectangle {
                 sleep-goal: root.sleep-goal-percent;
             }
 
-            QuickActionsCard {
-                work-running <=> root.work-running;
-                work-paused <=> root.work-paused;
-                sleeping <=> root.sleeping;
-
-                on-work-pause => { root.on-work-pause(); }
-                on-work-unpause => { root.on-work-unpause(); }
-                on-work-start => { root.on-work-start(); }
-                on-work-stop => { root.on-work-stop(); }
-                on-sleep-start => { root.on-sleep-start(); }
-                on-sleep-wake-up => { root.on-sleep-wake-up(); }
-            }
-
             RecentReportsCard {
+                width: 100%;
+                height: 14rem;
                 reports: root.recent-reports;
             }
         }

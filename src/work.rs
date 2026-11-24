@@ -47,6 +47,16 @@ enum WorkState {
     Paused { since: i64 },
 }
 
+/// A work or break interval clipped to one local date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkSegment {
+    pub date: NaiveDate,
+    /// Seconds after local midnight.
+    pub from_secs: u32,
+    pub to_secs: u32,
+    pub active: bool,
+}
+
 /// Accumulates active working time and records both active and paused
 /// intervals so breaks are visible in the usage graph.
 pub struct WorkTimer {
@@ -121,9 +131,9 @@ impl WorkTimer {
             .unwrap_or(0)
     }
 
-    /// Active seconds recorded for the current local week window.
-    pub fn week_active(&self) -> u64 {
-        self.daily_series(7)
+    /// Active seconds recorded between two local dates, inclusive.
+    pub fn active_between(&self, first: NaiveDate, last: NaiveDate) -> u64 {
+        self.series_between(first, last)
             .iter()
             .map(|(_, active, _)| *active)
             .sum()
@@ -135,35 +145,59 @@ impl WorkTimer {
         let Some(first) = first_date(today, days) else {
             return Vec::new();
         };
+        self.series_between(first, today)
+    }
+
+    /// Active and paused seconds for every local date in an inclusive window.
+    pub fn series_between(&self, first: NaiveDate, last: NaiveDate) -> Vec<(NaiveDate, u64, u64)> {
+        if last < first {
+            return Vec::new();
+        }
 
         let mut totals: HashMap<NaiveDate, (u64, u64)> = HashMap::new();
-        for interval in &self.intervals {
-            add_interval(
-                &mut totals,
-                first,
-                today,
-                interval.start,
-                interval.end,
-                interval.active,
-            );
+        self.for_each_interval(|start, end, active| {
+            add_interval(&mut totals, first, last, start, end, active);
+        });
+
+        let mut days = Vec::new();
+        let mut date = first;
+        loop {
+            let (active, paused) = totals.get(&date).copied().unwrap_or((0, 0));
+            days.push((date, active, paused));
+            if date >= last {
+                break;
+            }
+            let Some(next) = date.checked_add_signed(ChronoDuration::days(1)) else {
+                break;
+            };
+            date = next;
         }
-        match self.state {
-            WorkState::Running { since } => {
-                add_interval(&mut totals, first, today, since, now(), true)
-            }
-            WorkState::Paused { since } => {
-                add_interval(&mut totals, first, today, since, now(), false)
-            }
-            WorkState::Stopped => {}
+        days
+    }
+
+    /// Work and break intervals clipped to an inclusive local-date window.
+    pub fn segments_between(&self, first: NaiveDate, last: NaiveDate) -> Vec<WorkSegment> {
+        if last < first {
+            return Vec::new();
         }
 
-        (0..days)
-            .map(|offset| {
-                let date = today - ChronoDuration::days((days - 1 - offset) as i64);
-                let (active, paused) = totals.get(&date).copied().unwrap_or((0, 0));
-                (date, active, paused)
-            })
-            .collect()
+        let mut segments = Vec::new();
+        self.for_each_interval(|start, end, active| {
+            add_segment(&mut segments, first, last, start, end, active);
+        });
+        segments.sort_by_key(|segment| (segment.date, segment.from_secs, !segment.active));
+        segments
+    }
+
+    fn for_each_interval(&self, mut apply: impl FnMut(i64, i64, bool)) {
+        for interval in &self.intervals {
+            apply(interval.start, interval.end, interval.active);
+        }
+        match self.state {
+            WorkState::Running { since } => apply(since, now(), true),
+            WorkState::Paused { since } => apply(since, now(), false),
+            WorkState::Stopped => {}
+        }
     }
 
     pub fn start(&mut self) -> Result<(), Error> {
@@ -309,6 +343,44 @@ fn add_interval(
     }
 }
 
+fn add_segment(
+    segments: &mut Vec<WorkSegment>,
+    first: NaiveDate,
+    last: NaiveDate,
+    start: i64,
+    end: i64,
+    active: bool,
+) {
+    if end <= start {
+        return;
+    }
+
+    let mut date = local_date(start).max(first);
+    let final_date = local_date(end.saturating_sub(1)).min(last);
+    while date <= final_date {
+        if let Some((day_start, day_end)) = day_bounds(date) {
+            let from = start.max(day_start);
+            let to = end.min(day_end);
+            if to > from {
+                let from_secs = (from - day_start).clamp(0, 24 * 3600) as u32;
+                let to_secs = (to - day_start).clamp(0, 24 * 3600) as u32;
+                if to_secs > from_secs {
+                    segments.push(WorkSegment {
+                        date,
+                        from_secs,
+                        to_secs,
+                        active,
+                    });
+                }
+            }
+        }
+        let Some(next) = date.checked_add_signed(ChronoDuration::days(1)) else {
+            break;
+        };
+        date = next;
+    }
+}
+
 fn first_date(today: NaiveDate, days: usize) -> Option<NaiveDate> {
     let span = i64::try_from(days.checked_sub(1)?).ok()?;
     today.checked_sub_signed(ChronoDuration::days(span))
@@ -361,6 +433,35 @@ mod tests {
 
         assert_eq!(totals.get(&yesterday).copied().unwrap().0, 3600);
         assert_eq!(totals.get(&today).copied().unwrap().0, 3600);
+    }
+
+    #[test]
+    fn segments_keep_work_and_break_kinds_across_midnight() {
+        let today = Local::now().date_naive();
+        let yesterday = today - ChronoDuration::days(1);
+        let mut timer = timer();
+        timer.intervals.push(WorkInterval {
+            start: epoch(yesterday, 23, 0),
+            end: epoch(today, 1, 0),
+            active: true,
+        });
+        timer.intervals.push(WorkInterval {
+            start: epoch(today, 1, 0),
+            end: epoch(today, 1, 30),
+            active: false,
+        });
+
+        let segments = timer.segments_between(yesterday, today);
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].date, yesterday);
+        assert!(segments[0].active);
+        assert_eq!(segments[0].from_secs, 23 * 3600);
+        assert_eq!(segments[1].date, today);
+        assert!(segments[1].active);
+        assert_eq!(segments[1].to_secs, 3600);
+        assert_eq!(segments[2].date, today);
+        assert!(!segments[2].active);
+        assert_eq!(segments[2].to_secs, 5400);
     }
 
     #[test]

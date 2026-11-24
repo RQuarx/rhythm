@@ -21,7 +21,7 @@ pub use reporter::report_fatal;
 
 slint::include_modules!();
 
-use app::{DayUsage as AppDayUsage, RuleConfig, UsagePeriod};
+use app::{RuleConfig, TimelineBlock as AppTimelineBlock, TimelineDay as AppTimelineDay};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -95,6 +95,8 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                         ui.set_settings_notifications(snapshot.notifications_enabled);
                         ui.set_settings_quiet_start(snapshot.quiet_start.into());
                         ui.set_settings_quiet_end(snapshot.quiet_end.into());
+                        ui.set_settings_week_start(snapshot.week_start.into());
+                        ui.set_settings_usual_work_hours(snapshot.usual_work_hours.into());
                     }
                 }
             };
@@ -108,40 +110,39 @@ pub fn run(mobile: bool) -> Result<(), Error> {
             ));
             ui.set_rule_edits(ModelRc::new(rule_model.clone()));
 
-            let usage_model = Rc::new(VecModel::from(Vec::<DayUsage>::new()));
+            let timeline_model = Rc::new(VecModel::from(Vec::<TimelineDay>::new()));
             let report_model = Rc::new(VecModel::from(Vec::<ReportItem>::new()));
-            ui.set_usage_days(ModelRc::new(usage_model.clone()));
+            ui.set_timeline_days(ModelRc::new(timeline_model.clone()));
             ui.set_recent_reports(ModelRc::new(report_model.clone()));
 
             let refresh_dashboard = {
                 let app = app.clone();
                 let weak = ui.as_weak();
-                let usage_model = usage_model.clone();
+                let timeline_model = timeline_model.clone();
                 let report_model = report_model.clone();
                 move || {
                     if let Some(ui) = weak.upgrade() {
-                        let period = if ui.get_monthly() {
-                            UsagePeriod::Month
-                        } else {
-                            UsagePeriod::Week
-                        };
-                        let (days, reports, dashboard) = {
+                        let (timeline, reports, stats) = {
                             let app = app.borrow();
-                            (
-                                app.usage_series(period),
-                                app.recent_reports(),
-                                app.dashboard_snapshot(period),
-                            )
+                            let dashboard = app.dashboard_snapshot();
+                            (dashboard.timeline, app.recent_reports(), dashboard.stats)
                         };
-                        usage_model.set_vec(days.iter().map(day_to_slint).collect::<Vec<_>>());
+                        timeline_model.set_vec(
+                            timeline
+                                .days
+                                .iter()
+                                .map(timeline_day_to_slint)
+                                .collect::<Vec<_>>(),
+                        );
                         report_model
                             .set_vec(reports.iter().map(report_to_slint).collect::<Vec<_>>());
-                        ui.set_chart_max(to_i32(dashboard.chart_max));
-                        ui.set_average_work(dashboard.stats.average_work.into());
-                        ui.set_average_sleep(dashboard.stats.average_sleep.into());
-                        ui.set_streak(to_i32(dashboard.stats.streak as u64));
-                        ui.set_work_goal_percent(dashboard.stats.work_goal_percent);
-                        ui.set_sleep_goal_percent(dashboard.stats.sleep_goal_percent);
+                        ui.set_week_label(timeline.week_label.into());
+                        ui.set_timeline_now_seconds(to_i32(u64::from(timeline.now_seconds)));
+                        ui.set_average_work(stats.average_work.into());
+                        ui.set_average_sleep(stats.average_sleep.into());
+                        ui.set_streak(to_i32(u64::from(stats.streak)));
+                        ui.set_work_goal_percent(stats.work_goal_percent);
+                        ui.set_sleep_goal_percent(stats.sleep_goal_percent);
                     }
                 }
             };
@@ -156,8 +157,6 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                     refresh_dashboard();
                 }
             });
-
-            ui.on_toggle_period(refresh_dashboard.clone());
 
             ui.on_on_work_start({
                 let app = app.clone();
@@ -314,6 +313,7 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                 let reporter = reporter.clone();
                 let weak = ui.as_weak();
                 let refresh_settings = refresh_settings.clone();
+                let refresh_dashboard = refresh_dashboard.clone();
                 move || {
                     let Some(ui) = weak.upgrade() else {
                         return;
@@ -323,9 +323,14 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                         ui.get_settings_notifications(),
                         ui.get_settings_quiet_start().to_string(),
                         ui.get_settings_quiet_end().to_string(),
+                        ui.get_settings_week_start().to_string(),
+                        ui.get_settings_usual_work_hours().to_string(),
                     );
                     match result {
-                        Ok(()) => refresh_settings(),
+                        Ok(()) => {
+                            refresh_settings();
+                            refresh_dashboard();
+                        }
                         Err(message) => {
                             reporter.warning("Could not save settings", message, "");
                             refresh_settings();
@@ -346,12 +351,30 @@ pub fn run(mobile: bool) -> Result<(), Error> {
     ui.run().map_err(Error::PlatformError)
 }
 
-fn day_to_slint(day: &AppDayUsage) -> DayUsage {
-    DayUsage {
-        label: day.label.clone().into(),
-        work: to_i32(day.work),
-        paused: to_i32(day.paused),
-        sleep: to_i32(day.sleep),
+fn timeline_day_to_slint(day: &AppTimelineDay) -> TimelineDay {
+    TimelineDay {
+        name: day.name.clone().into(),
+        today: day.today,
+        work_label: day.work_label.clone().into(),
+        sleep_label: day.sleep_label.clone().unwrap_or_default().into(),
+        work_compact: day.work_compact.clone().into(),
+        sleep_compact: day.sleep_compact.clone().unwrap_or_default().into(),
+        sleep_low: day.sleep_low,
+        blocks: ModelRc::new(VecModel::from(
+            day.blocks
+                .iter()
+                .map(timeline_block_to_slint)
+                .collect::<Vec<_>>(),
+        )),
+    }
+}
+
+fn timeline_block_to_slint(block: &AppTimelineBlock) -> TimelineBlock {
+    TimelineBlock {
+        kind: block.kind.code(),
+        from_seconds: to_i32(u64::from(block.from_secs)),
+        to_seconds: to_i32(u64::from(block.to_secs)),
+        detail: block.detail.clone().into(),
     }
 }
 

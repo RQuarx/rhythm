@@ -62,7 +62,7 @@ export component CorrectionDialog inherits Rectangle {
     in property <string> suggested-hours;
     in property <string> suggested-minutes;
     callback confirm(string, string);
-    callback cancel;
+    callback discard;
 
     property <string> hours-text: root.suggested-hours;
     property <string> minutes-text: root.suggested-minutes;
@@ -82,7 +82,7 @@ export component CorrectionDialog inherits Rectangle {
             alignment: center;
 
             Rectangle {
-                min-width: 20rem;
+                width: min(24rem, root.width - 2rem);
                 background: Palette.background;
                 border-width: 1px;
                 border-color: Palette.border;
@@ -96,32 +96,34 @@ export component CorrectionDialog inherits Rectangle {
                         text: "How long did you sleep?";
                         font-weight: 700;
                     }
-                    Text { text: "Adjust the computed duration if you were awake during the night."; }
-
-                    HorizontalLayout {
-                        spacing: 1rem;
-
-                        VerticalLayout {
-                            Text { text: "Hours"; }
-                            hours-input := LineEdit { text: root.hours-text; }
-                        }
-                        VerticalLayout {
-                            Text { text: "Minutes"; }
-                            minutes-input := LineEdit { text: root.minutes-text; }
-                        }
+                    Text {
+                        text: "Based on your bedtime and wake-up times. Adjust it if you were awake during the night.";
+                        wrap: word-wrap;
                     }
 
-                    HorizontalLayout {
+                    VerticalLayout {
+                        spacing: 0.35rem;
+                        Text { text: "Hours"; }
+                        hours-input := LineEdit { text: root.hours-text; }
+                    }
+                    VerticalLayout {
+                        spacing: 0.35rem;
+                        Text { text: "Minutes"; }
+                        minutes-input := LineEdit { text: root.minutes-text; }
+                    }
+
+                    FlexboxLayout {
+                        flex-wrap: wrap;
                         alignment: end;
-                        spacing: 1rem;
+                        spacing: 0.75rem;
 
                         Button {
                             text: "Use computed";
                             clicked => { root.confirm(root.suggested-hours, root.suggested-minutes); }
                         }
                         Button {
-                            text: "Cancel";
-                            clicked => { root.cancel(); }
+                            text: "Discard";
+                            clicked => { root.discard(); }
                         }
                         Button {
                             text: "Save";
