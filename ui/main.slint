@@ -82,7 +82,7 @@ export component MainWindow inherits Window {
 
     in-out property <[RuleEdit]> rule-edits;
 
-    in-out property <string> settings-theme: "";
+    in-out property <string> settings-theme: "System";
     in-out property <bool> settings-notifications: true;
     in-out property <string> settings-quiet-start: "22:00";
     in-out property <string> settings-quiet-end: "07:00";
@@ -120,68 +120,127 @@ export component MainWindow inherits Window {
         flex-wrap: no-wrap;
         alignment: stretch;
 
-        VerticalLayout {
+        // Mobile-only page swipes. The menu bar stays outside this handler so
+        // tab taps remain immediate and only the content area responds.
+        sgr := SwipeGestureHandler {
             vertical-stretch: 1;
             horizontal-stretch: 1;
             layout-order: root.orientation == horizontal ? 2 : 1;
+            enabled: root.is-mobile;
+            handle-swipe-left: root.current-page < 3;
+            handle-swipe-right: root.current-page > 0;
 
-            if root.current-page == 0: HomePage {
-                today-working-hour: root.today-working-hour;
-                week-working-hour: root.week-working-hour;
-                max-working-hour: root.max-working-hour;
-                today-sleeping-hour: root.today-sleeping-hour;
-                week-sleeping-hour: root.week-sleeping-hour;
-                min-sleeping-hour: root.min-sleeping-hour;
-                max-working-time: root.max-working-time;
-                current-working-time: root.current-working-time;
-                max-sleeping-time: root.max-sleeping-time;
-                current-sleeping-time: root.current-sleeping-time;
-                work-running <=> root.work-running;
-                work-paused <=> root.work-paused;
-                sleeping <=> root.sleeping;
-
-                timeline-days: root.timeline-days;
-                week-label: root.week-label;
-                timeline-now-seconds: root.timeline-now-seconds;
-                is-mobile: root.is-mobile;
-                average-work: root.average-work;
-                average-sleep: root.average-sleep;
-                streak: root.streak;
-                work-goal-percent: root.work-goal-percent;
-                sleep-goal-percent: root.sleep-goal-percent;
-                recent-reports: root.recent-reports;
-
-                on-work-pause => { root.on-work-pause() }
-                on-work-unpause => { root.on-work-unpause() }
-                on-work-start => { root.on-work-start() }
-                on-work-stop => { root.on-work-stop() }
-                on-sleep-start => { root.on-sleep-start() }
-                on-sleep-wake-up => { root.on-sleep-wake-up() }
+            swiped => {
+                if root.current-page < 3
+                    && self.current-position.x < self.pressed-position.x - self.width / 8 {
+                    root.current-page = root.current-page + 1;
+                    root.page-changed(root.current-page);
+                } else if root.current-page > 0
+                    && self.current-position.x > self.pressed-position.x + self.width / 8 {
+                    root.current-page = root.current-page - 1;
+                    root.page-changed(root.current-page);
+                }
             }
 
-            if root.current-page == 1: RulesPage {
-                rules <=> root.rule-edits;
+            page-clip := Rectangle {
+                width: parent.width;
+                height: parent.height;
+                clip: true;
 
-                field-changed(index, field, value) => { root.rule-field-changed(index, field, value); }
-                add-rule => { root.rule-add(); }
-                remove-rule(index) => { root.rule-remove(index); }
-                save-rules => { root.rules-save(); }
-                reset-rules => { root.rules-reset(); }
-            }
-            if root.current-page == 2: SettingsPage {
-                theme <=> root.settings-theme;
-                notifications-enabled <=> root.settings-notifications;
-                quiet-start <=> root.settings-quiet-start;
-                quiet-end <=> root.settings-quiet-end;
-                week-start <=> root.settings-week-start;
-                usual-work-hours <=> root.settings-usual-work-hours;
+                page-row := HorizontalLayout {
+                    property <length> page-position: -root.current-page * page-clip.width;
+                    property <length> swipe-offset: 0;
 
-                save-settings => { root.save-settings(); }
-            }
-            if root.current-page == 3: AboutPage {
-                version: app-version;
-                open-url(url) => {
-                    root.open-url(url)
+                    width: page-clip.width * 4;
+                    height: page-clip.height;
+                    x: page-position + swipe-offset;
+
+                    animate page-position {
+                        duration: 220ms;
+                        easing: ease-out;
+                    }
+
+                    states [
+                        swiping when sgr.swiping: {
+                            swipe-offset: sgr.current-position.x - sgr.pressed-position.x;
+                            out {
+                                animate swipe-offset {
+                                    duration: 220ms;
+                                    easing: ease-out;
+                                }
+                            }
+                        }
+                    ]
+
+                    HomePage {
+                        width: page-clip.width;
+                        height: page-clip.height;
+                        today-working-hour: root.today-working-hour;
+                        week-working-hour: root.week-working-hour;
+                        max-working-hour: root.max-working-hour;
+                        today-sleeping-hour: root.today-sleeping-hour;
+                        week-sleeping-hour: root.week-sleeping-hour;
+                        min-sleeping-hour: root.min-sleeping-hour;
+                        max-working-time: root.max-working-time;
+                        current-working-time: root.current-working-time;
+                        max-sleeping-time: root.max-sleeping-time;
+                        current-sleeping-time: root.current-sleeping-time;
+                        work-running <=> root.work-running;
+                        work-paused <=> root.work-paused;
+                        sleeping <=> root.sleeping;
+
+                        timeline-days: root.timeline-days;
+                        week-label: root.week-label;
+                        timeline-now-seconds: root.timeline-now-seconds;
+                        is-mobile: root.is-mobile;
+                        average-work: root.average-work;
+                        average-sleep: root.average-sleep;
+                        streak: root.streak;
+                        work-goal-percent: root.work-goal-percent;
+                        sleep-goal-percent: root.sleep-goal-percent;
+                        recent-reports: root.recent-reports;
+
+                        on-work-pause => { root.on-work-pause() }
+                        on-work-unpause => { root.on-work-unpause() }
+                        on-work-start => { root.on-work-start() }
+                        on-work-stop => { root.on-work-stop() }
+                        on-sleep-start => { root.on-sleep-start() }
+                        on-sleep-wake-up => { root.on-sleep-wake-up() }
+                    }
+
+                    RulesPage {
+                        width: page-clip.width;
+                        height: page-clip.height;
+                        rules <=> root.rule-edits;
+
+                        field-changed(index, field, value) => { root.rule-field-changed(index, field, value); }
+                        add-rule => { root.rule-add(); }
+                        remove-rule(index) => { root.rule-remove(index); }
+                        save-rules => { root.rules-save(); }
+                        reset-rules => { root.rules-reset(); }
+                    }
+
+                    SettingsPage {
+                        width: page-clip.width;
+                        height: page-clip.height;
+                        theme <=> root.settings-theme;
+                        notifications-enabled <=> root.settings-notifications;
+                        quiet-start <=> root.settings-quiet-start;
+                        quiet-end <=> root.settings-quiet-end;
+                        week-start <=> root.settings-week-start;
+                        usual-work-hours <=> root.settings-usual-work-hours;
+
+                        save-settings => { root.save-settings(); }
+                    }
+
+                    AboutPage {
+                        width: page-clip.width;
+                        height: page-clip.height;
+                        version: app-version;
+                        open-url(url) => {
+                            root.open-url(url)
+                        }
+                    }
                 }
             }
         }
@@ -203,6 +262,18 @@ export component MainWindow inherits Window {
                 { icon: @image-url("../assets/icons/info.svg"), text: "About" }
             ];
         }
+    }
+
+    // Hidden focus target used to release text fields when switching pages.
+    page-focus := FocusScope {
+        width: 0;
+        height: 0;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+    }
+
+    changed current-page => {
+        page-focus.focus();
     }
 
     if root.sleep-need-bedtime: ManualBedtimeDialog {
