@@ -4,6 +4,7 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
+use chrono::{Local, Timelike};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
@@ -85,7 +86,7 @@ impl Settings {
 
         Ok(Settings {
             file: filepath.to_path_buf(),
-            data,
+            data: normalize(data),
         })
     }
 
@@ -126,6 +127,48 @@ impl Settings {
         self.data.notifications.quiet_start = start;
         self.data.notifications.quiet_end = end;
     }
+
+    /// Whether rule reports should be shown right now.
+    pub fn warnings_enabled(&self) -> bool {
+        if !self.notifications_enabled() {
+            return false;
+        }
+        let (start, end) = self.quiet_hours();
+        if start == end {
+            return true;
+        }
+        let time = Local::now().time();
+        let minutes = time.hour() as u16 * 60 + time.minute() as u16;
+        !is_quiet_hours(start, end, minutes)
+    }
+}
+
+/// Quiet hours may wrap around midnight. Equal start/end means no quiet window.
+pub fn is_quiet_hours(start: u16, end: u16, minutes: u16) -> bool {
+    if start == end {
+        return false;
+    }
+    if start < end {
+        minutes >= start && minutes < end
+    } else {
+        minutes >= start || minutes < end
+    }
+}
+
+/// Replaces values that the UI cannot represent with safe defaults.
+fn normalize(mut data: SettingsJson) -> SettingsJson {
+    if !matches!(
+        data.appearance.selected_theme.as_str(),
+        "System" | "Dark" | "Light"
+    ) {
+        data.appearance.selected_theme = "System".to_string();
+    }
+    if data.notifications.quiet_start >= 24 * 60 || data.notifications.quiet_end >= 24 * 60 {
+        let defaults = NotificationsJson::default();
+        data.notifications.quiet_start = defaults.quiet_start;
+        data.notifications.quiet_end = defaults.quiet_end;
+    }
+    data
 }
 
 #[cfg(test)]
@@ -160,5 +203,25 @@ mod tests {
         assert_eq!(reloaded.selected_theme(), "Light");
         assert!(!reloaded.notifications_enabled());
         assert_eq!(reloaded.quiet_hours(), (21 * 60, 6 * 60));
+    }
+
+    #[test]
+    fn invalid_values_fall_back_to_defaults() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-settings-invalid-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"appearance":{"selected_theme":"Neon"},"notifications":{"enabled":true,"quiet_start":9999,"quiet_end":8888}}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::parse(&path).unwrap();
+        assert_eq!(settings.selected_theme(), "System");
+        assert_eq!(settings.quiet_hours(), (22 * 60, 7 * 60));
     }
 }

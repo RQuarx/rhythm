@@ -94,6 +94,19 @@ impl SleepTracker {
             .unwrap_or(0)
     }
 
+    /// Whether a completed night is waiting for the user's correction.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Discards a pending night without recording it.
+    pub fn discard_pending(&mut self) -> Result<(), Error> {
+        if self.pending.take().is_none() {
+            return Ok(());
+        }
+        self.save()
+    }
+
     /// Seconds since the recorded bedtime, without triggering any rules.
     pub fn current_elapsed(&self) -> u64 {
         self.bedtime
@@ -103,26 +116,29 @@ impl SleepTracker {
 
     pub fn go_to_bed(&mut self) -> Result<(), Error> {
         self.bedtime = Some(now());
-        self.pending = None;
         self.save()
     }
 
-    /// Records a bedtime from an "HH:MM" entry. Times in the future are
-    /// interpreted as belonging to the previous night.
-    pub fn set_bedtime_minutes(&mut self, minutes: u16) -> Result<(), Error> {
-        let time = NaiveTime::from_hms_opt((minutes / 60) as u32, (minutes % 60) as u32, 0)
+    /// Creates a pending night for a manually entered bedtime. `wake_time` is
+    /// the instant the user pressed "Woke up", so the recorded duration does
+    /// not include the time spent answering the bedtime prompt.
+    pub fn record_manual_night(&mut self, minutes: u16, wake_time: i64) -> Result<u64, Error> {
+        let wake = Local
+            .timestamp_opt(wake_time, 0)
+            .single()
             .ok_or(Error::InvalidTime)?;
-        let now = Local::now();
-        let mut naive = now.date_naive().and_time(time);
-        let mut local = local_datetime(naive).ok_or(Error::InvalidTime)?;
-
-        if local.timestamp() > now.timestamp() {
-            naive -= ChronoDuration::days(1);
-            local = local_datetime(naive).ok_or(Error::InvalidTime)?;
+        let bedtime = resolve_bedtime(minutes, wake)?;
+        if wake_time <= bedtime {
+            return Err(Error::InvalidTime);
         }
-
-        self.bedtime = Some(local.timestamp());
-        self.save()
+        let seconds = (wake_time - bedtime) as u64;
+        self.pending = Some(PendingNight {
+            bedtime,
+            wake_time,
+            seconds,
+        });
+        self.save()?;
+        Ok(seconds)
     }
 
     /// Ends the current interval and returns its raw duration for correction.
@@ -163,25 +179,61 @@ impl SleepTracker {
         self.nights.last().map(|night| night.seconds).unwrap_or(0)
     }
 
+    /// Effective sleep from the most recent night, if one has been recorded.
+    pub fn last_night_value(&self) -> Option<u64> {
+        self.nights.last().map(|night| night.seconds)
+    }
+
     pub fn today_total(&self) -> u64 {
         let today = Local::now().date_naive();
-        self.nights
+        let completed: u64 = self
+            .nights
             .iter()
             .filter(|night| local_date(night.wake_time) == today)
             .map(|night| night.seconds)
-            .sum()
+            .sum();
+        completed + self.current_sleep_overlap(today)
     }
 
     pub fn week_total(&self) -> u64 {
         let today = Local::now().date_naive();
-        self.nights
+        let first = today - ChronoDuration::days(6);
+        let completed: u64 = self
+            .nights
             .iter()
             .filter(|night| {
                 let date = local_date(night.wake_time);
                 (0..7).any(|days| today - ChronoDuration::days(days) == date)
             })
             .map(|night| night.seconds)
-            .sum()
+            .sum();
+        let Some(start) = day_start(first) else {
+            return completed;
+        };
+        let Some(end) = day_start(today + ChronoDuration::days(1)) else {
+            return completed;
+        };
+        completed + self.active_sleep_in(start, end)
+    }
+
+    /// Portion of the in-progress night that falls inside the given date.
+    fn current_sleep_overlap(&self, date: chrono::NaiveDate) -> u64 {
+        let Some(start) = day_start(date) else {
+            return 0;
+        };
+        let Some(end) = day_start(date + ChronoDuration::days(1)) else {
+            return 0;
+        };
+        self.active_sleep_in(start, end)
+    }
+
+    fn active_sleep_in(&self, start: i64, end: i64) -> u64 {
+        let Some(bedtime) = self.bedtime else {
+            return 0;
+        };
+        let from = bedtime.max(start);
+        let to = now().min(end);
+        to.saturating_sub(from) as u64
     }
 
     /// Effective sleep totals by wake-up date, for the usage graph.
@@ -189,6 +241,11 @@ impl SleepTracker {
         let mut totals = HashMap::new();
         for night in &self.nights {
             *totals.entry(local_date(night.wake_time)).or_insert(0) += night.seconds;
+        }
+        let today = Local::now().date_naive();
+        let active = self.current_sleep_overlap(today);
+        if active > 0 {
+            *totals.entry(today).or_insert(0) += active;
         }
         totals
     }
@@ -215,6 +272,26 @@ fn local_datetime(naive: NaiveDateTime) -> Option<DateTime<Local>> {
     }
 }
 
+fn day_start(date: chrono::NaiveDate) -> Option<i64> {
+    local_datetime(date.and_hms_opt(0, 0, 0)?).map(|value| value.timestamp())
+}
+
+/// Resolves an "HH:MM" bedtime relative to a reference instant. Times later
+/// than the reference belong to the previous day.
+fn resolve_bedtime(minutes: u16, reference: DateTime<Local>) -> Result<i64, Error> {
+    let time = NaiveTime::from_hms_opt((minutes / 60) as u32, (minutes % 60) as u32, 0)
+        .ok_or(Error::InvalidTime)?;
+    let mut naive = reference.date_naive().and_time(time);
+    let mut local = local_datetime(naive).ok_or(Error::InvalidTime)?;
+
+    if local.timestamp() > reference.timestamp() {
+        naive -= ChronoDuration::days(1);
+        local = local_datetime(naive).ok_or(Error::InvalidTime)?;
+    }
+
+    Ok(local.timestamp())
+}
+
 fn local_date(epoch: i64) -> chrono::NaiveDate {
     Local
         .timestamp_opt(epoch, 0)
@@ -225,6 +302,8 @@ fn local_date(epoch: i64) -> chrono::NaiveDate {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use chrono::{NaiveDate, TimeZone};
 
     use super::*;
@@ -268,5 +347,28 @@ mod tests {
         });
 
         assert_eq!(tracker.week_total(), 0);
+    }
+
+    #[test]
+    fn manual_night_uses_the_wake_button_time() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-sleep-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut tracker = SleepTracker::new(&dir);
+
+        let today = Local::now().date_naive();
+        let yesterday = today - ChronoDuration::days(1);
+        let wake = epoch(today, 7, 0);
+        let expected = (wake - epoch(yesterday, 23, 0)) as u64;
+
+        assert_eq!(
+            tracker.record_manual_night(23 * 60, wake).unwrap(),
+            expected
+        );
+        assert!(tracker.has_pending());
+        assert_eq!(tracker.pending_seconds(), expected);
     }
 }

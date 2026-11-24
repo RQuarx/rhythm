@@ -74,6 +74,12 @@ export component ErrorDialog inherits Rectangle {
 
     background: #00000080;
 
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {}
+    }
+
     VerticalLayout {
         alignment: center;
 
@@ -128,6 +134,12 @@ export component FatalScreen inherits Rectangle {
     callback quit;
 
     background: Palette.background;
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {}
+    }
 
     VerticalLayout {
         padding: 2rem;

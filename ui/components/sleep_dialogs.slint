@@ -6,6 +6,12 @@ export component ManualBedtimeDialog inherits Rectangle {
 
     background: #00000080;
 
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {}
+    }
+
     VerticalLayout {
         alignment: center;
 
@@ -58,13 +64,16 @@ export component CorrectionDialog inherits Rectangle {
     callback confirm(string, string);
     callback cancel;
 
-    property <string> hours-text;
-    property <string> minutes-text;
-
-    changed suggested-hours => { root.hours-text = root.suggested-hours; }
-    changed suggested-minutes => { root.minutes-text = root.suggested-minutes; }
+    property <string> hours-text: root.suggested-hours;
+    property <string> minutes-text: root.suggested-minutes;
 
     background: #00000080;
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {}
+    }
 
     VerticalLayout {
         alignment: center;

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -81,9 +82,15 @@ impl UserData {
         };
 
         // Rules saved before ids existed get a stable one based on their position.
+        // Duplicate or empty ids are replaced so the evaluator always has a unique key.
+        let mut seen = HashSet::new();
         for (index, rule) in data.rules.iter_mut().enumerate() {
-            if rule.id.is_empty() {
-                rule.id = format!("rule-{index}");
+            if rule.id.is_empty() || !seen.insert(rule.id.clone()) {
+                let mut candidate = format!("rule-{index}");
+                while !seen.insert(candidate.clone()) {
+                    candidate.push('_');
+                }
+                rule.id = candidate;
             }
         }
 

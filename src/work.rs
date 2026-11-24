@@ -98,6 +98,7 @@ impl WorkTimer {
         matches!(self.state, WorkState::Paused { .. })
     }
 
+    #[cfg(test)]
     pub fn elapsed(&self) -> u64 {
         let recorded: u64 = self
             .intervals
@@ -112,19 +113,50 @@ impl WorkTimer {
         self.accumulated + recorded + current
     }
 
+    /// Active seconds recorded for today's local date.
+    pub fn today_active(&self) -> u64 {
+        self.daily_series(1)
+            .last()
+            .map(|(_, active, _)| *active)
+            .unwrap_or(0)
+    }
+
+    /// Active seconds recorded for the current local week window.
+    pub fn week_active(&self) -> u64 {
+        self.daily_series(7)
+            .iter()
+            .map(|(_, active, _)| *active)
+            .sum()
+    }
+
     /// Active and paused seconds for the last `days` local dates, oldest first.
     pub fn daily_series(&self, days: usize) -> Vec<(NaiveDate, u64, u64)> {
+        let today = Local::now().date_naive();
+        let Some(first) = first_date(today, days) else {
+            return Vec::new();
+        };
+
         let mut totals: HashMap<NaiveDate, (u64, u64)> = HashMap::new();
         for interval in &self.intervals {
-            add_interval(&mut totals, interval.start, interval.end, interval.active);
+            add_interval(
+                &mut totals,
+                first,
+                today,
+                interval.start,
+                interval.end,
+                interval.active,
+            );
         }
         match self.state {
-            WorkState::Running { since } => add_interval(&mut totals, since, now(), true),
-            WorkState::Paused { since } => add_interval(&mut totals, since, now(), false),
+            WorkState::Running { since } => {
+                add_interval(&mut totals, first, today, since, now(), true)
+            }
+            WorkState::Paused { since } => {
+                add_interval(&mut totals, first, today, since, now(), false)
+            }
             WorkState::Stopped => {}
         }
 
-        let today = Local::now().date_naive();
         (0..days)
             .map(|offset| {
                 let date = today - ChronoDuration::days((days - 1 - offset) as i64);
@@ -240,14 +272,24 @@ fn day_bounds(date: NaiveDate) -> Option<(i64, i64)> {
     Some((start, end))
 }
 
-fn add_interval(totals: &mut HashMap<NaiveDate, (u64, u64)>, start: i64, end: i64, active: bool) {
+fn add_interval(
+    totals: &mut HashMap<NaiveDate, (u64, u64)>,
+    first: NaiveDate,
+    last: NaiveDate,
+    start: i64,
+    end: i64,
+    active: bool,
+) {
     if end <= start {
         return;
     }
-    let mut date = local_date(start);
-    let last = local_date(end - 1);
-    let mut guard = 0;
-    while date <= last && guard < 400 {
+
+    // Only split dates that are part of the requested window. This keeps the
+    // work proportional to the graph period instead of the interval length,
+    // without silently dropping totals from intervals spanning many days.
+    let mut date = local_date(start).max(first);
+    let final_date = local_date(end.saturating_sub(1)).min(last);
+    while date <= final_date {
         if let Some((day_start, day_end)) = day_bounds(date) {
             let from = start.max(day_start);
             let to = end.min(day_end);
@@ -260,9 +302,16 @@ fn add_interval(totals: &mut HashMap<NaiveDate, (u64, u64)>, start: i64, end: i6
                 }
             }
         }
-        date += ChronoDuration::days(1);
-        guard += 1;
+        let Some(next) = date.checked_add_signed(ChronoDuration::days(1)) else {
+            break;
+        };
+        date = next;
     }
+}
+
+fn first_date(today: NaiveDate, days: usize) -> Option<NaiveDate> {
+    let span = i64::try_from(days.checked_sub(1)?).ok()?;
+    today.checked_sub_signed(ChronoDuration::days(span))
 }
 
 #[cfg(test)]
@@ -303,6 +352,8 @@ mod tests {
         let mut totals = HashMap::new();
         add_interval(
             &mut totals,
+            yesterday,
+            today,
             epoch(yesterday, 23, 0),
             epoch(today, 1, 0),
             true,
@@ -310,5 +361,23 @@ mod tests {
 
         assert_eq!(totals.get(&yesterday).copied().unwrap().0, 3600);
         assert_eq!(totals.get(&today).copied().unwrap().0, 3600);
+    }
+
+    #[test]
+    fn long_intervals_are_counted_inside_the_window() {
+        let today = Local::now().date_naive();
+        let yesterday = today - ChronoDuration::days(1);
+        let mut totals = HashMap::new();
+        add_interval(
+            &mut totals,
+            yesterday,
+            today,
+            epoch(today - ChronoDuration::days(401), 0, 0),
+            epoch(today, 12, 0),
+            true,
+        );
+
+        assert_eq!(totals.get(&yesterday).copied().unwrap().0, 24 * 3600);
+        assert_eq!(totals.get(&today).copied().unwrap().0, 12 * 3600);
     }
 }

@@ -1,6 +1,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use chrono::Local;
@@ -39,6 +40,13 @@ struct HistoryJson {
 pub struct ReportHistory {
     file: PathBuf,
     reports: Vec<ReportRecord>,
+    modified: Option<SystemTime>,
+}
+
+fn modified(file: &Path) -> Option<SystemTime> {
+    fs::metadata(file)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 impl ReportHistory {
@@ -46,6 +54,7 @@ impl ReportHistory {
         Self {
             file: config_dir.join(FILE_NAME),
             reports: Vec::new(),
+            modified: None,
         }
     }
 
@@ -57,12 +66,32 @@ impl ReportHistory {
             Err(e) => return Err(e.into()),
         };
         Ok(Self {
-            file,
             reports: data.reports,
+            modified: modified(&file),
+            file,
         })
     }
 
+    /// Picks up reports written by the Android background checker.
+    pub fn reload_if_changed(&mut self) -> Result<(), Error> {
+        let current = modified(&self.file);
+        if current == self.modified {
+            return Ok(());
+        }
+
+        let data: HistoryJson = match fs::read_to_string(&self.file) {
+            Ok(data) => serde_json::from_str(&data)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => HistoryJson::default(),
+            Err(e) => return Err(e.into()),
+        };
+        self.reports = data.reports;
+        self.modified = modified(&self.file);
+        Ok(())
+    }
+
     pub fn record(&mut self, severity: &str, title: &str, message: &str) -> Result<(), Error> {
+        // Don't overwrite a report another process wrote since the last tick.
+        let _ = self.reload_if_changed();
         self.reports.insert(
             0,
             ReportRecord {
@@ -79,6 +108,7 @@ impl ReportHistory {
                 reports: self.reports.clone(),
             },
         )?;
+        self.modified = modified(&self.file);
         Ok(())
     }
 
@@ -109,5 +139,25 @@ mod tests {
         assert_eq!(loaded.reports().len(), 1);
         assert_eq!(loaded.reports()[0].title, "Title");
         assert_eq!(loaded.reports()[0].severity, "warning");
+    }
+
+    #[test]
+    fn reloads_reports_written_by_another_process() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-reports-reload-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut history = ReportHistory::new(&dir);
+        let mut background = ReportHistory::load(&dir).unwrap();
+        background
+            .record("warning", "Background", "Rule fired")
+            .unwrap();
+
+        history.reload_if_changed().unwrap();
+        assert_eq!(history.reports().len(), 1);
+        assert_eq!(history.reports()[0].title, "Background");
     }
 }

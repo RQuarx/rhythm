@@ -1,0 +1,278 @@
+use std::{
+    collections::{HashSet, VecDeque},
+    fs,
+    path::Path,
+    sync::Mutex,
+};
+
+use chrono::Local;
+use serde::{Deserialize, Serialize};
+
+use crate::storage;
+
+const STATE_FILE: &str = "widget_state.json";
+const COMMAND_FILE: &str = "widget_commands.json";
+const DRAIN_FILE: &str = "widget_commands.drain.json";
+const STATE_VERSION: u32 = 1;
+
+static NATIVE_COMMANDS: Mutex<VecDeque<Command>> = Mutex::new(VecDeque::new());
+static LAST_COMMAND_ID: Mutex<u64> = Mutex::new(0);
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StateData {
+    pub version: u32,
+    pub work_active: bool,
+    pub work_paused: bool,
+    pub work_seconds: u64,
+    pub paused_seconds: u64,
+    pub sleep_active: bool,
+    pub sleep_seconds: u64,
+    pub last_night_seconds: u64,
+    pub work_target: u64,
+    pub sleep_target: u64,
+    pub theme: String,
+    pub updated_at: String,
+}
+
+impl Default for StateData {
+    fn default() -> Self {
+        Self {
+            version: STATE_VERSION,
+            work_active: false,
+            work_paused: false,
+            work_seconds: 0,
+            paused_seconds: 0,
+            sleep_active: false,
+            sleep_seconds: 0,
+            last_night_seconds: 0,
+            work_target: 0,
+            sleep_target: 0,
+            theme: "System".to_string(),
+            updated_at: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Command {
+    pub id: u64,
+    pub action: String,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct CommandFile {
+    #[serde(default)]
+    commands: Vec<Command>,
+}
+
+fn signature(data: &StateData) -> String {
+    serde_json::to_string(&StateData {
+        updated_at: String::new(),
+        ..data.clone()
+    })
+    .unwrap_or_default()
+}
+
+/// Writes the authoritative state for the widget.
+///
+/// The widget writes optimistic state into the same file when the user presses
+/// a button, so we compare against the file itself rather than an in-memory
+/// cache. That way stale optimistic state is always overwritten on the next
+/// update.
+pub fn write_state(config_dir: &Path, data: &StateData) {
+    let path = config_dir.join(STATE_FILE);
+    let expected = signature(data);
+
+    if let Ok(text) = fs::read_to_string(&path)
+        && let Ok(current) = serde_json::from_str::<StateData>(&text)
+        && signature(&current) == expected
+    {
+        return;
+    }
+
+    let mut data = data.clone();
+    data.updated_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if let Err(e) = storage::write_json(&path, &data) {
+        tracing::error!("Failed to write widget state: {e}");
+        return;
+    }
+    notify_widget();
+}
+
+/// Returns newly queued commands, ordered by id. Clears the command file.
+pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
+    let file_commands = read_command_file(config_dir);
+    let mut commands: Vec<Command> = NATIVE_COMMANDS.lock().unwrap().drain(..).collect();
+    commands.extend(file_commands);
+    commands.sort_by_key(|command| command.id);
+
+    let mut last_id = LAST_COMMAND_ID.lock().unwrap();
+    let mut seen = HashSet::new();
+    let fresh: Vec<Command> = commands
+        .into_iter()
+        // The widget writes a command to the file AND sends it through JNI,
+        // so the same id can arrive twice in one drain.
+        .filter(|command| command.id > *last_id && seen.insert(command.id))
+        .collect();
+    if let Some(newest) = fresh.last() {
+        *last_id = newest.id;
+    }
+    fresh
+}
+
+fn read_command_file(config_dir: &Path) -> Vec<Command> {
+    let path = config_dir.join(COMMAND_FILE);
+    let drain_path = config_dir.join(DRAIN_FILE);
+    let mut commands = Vec::new();
+
+    // Recover a drain file left behind by an earlier crash.
+    if drain_path.exists() {
+        commands.extend(parse_command_file(&drain_path));
+        let _ = fs::remove_file(&drain_path);
+    }
+
+    // Renaming is atomic: the widget can append to a fresh command file while
+    // we process what was already queued, without a read-clear race.
+    if fs::rename(&path, &drain_path).is_ok() {
+        commands.extend(parse_command_file(&drain_path));
+        let _ = fs::remove_file(&drain_path);
+    }
+
+    commands
+}
+
+fn parse_command_file(path: &Path) -> Vec<Command> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<CommandFile>(&text)
+        .map(|file| file.commands)
+        .or_else(|_| serde_json::from_str::<Vec<Command>>(&text))
+        .unwrap_or_default()
+}
+
+/// Called by the JNI bridge when the widget sends a command while the app is alive.
+#[cfg(target_os = "android")]
+fn queue_native_command(json: &str) {
+    #[derive(Deserialize)]
+    struct Incoming {
+        action: String,
+        #[serde(default)]
+        id: u64,
+    }
+    let Ok(incoming) = serde_json::from_str::<Incoming>(json) else {
+        return;
+    };
+    let id = if incoming.id == 0 {
+        let mut last = LAST_COMMAND_ID.lock().unwrap();
+        *last += 1;
+        *last
+    } else {
+        incoming.id
+    };
+    NATIVE_COMMANDS.lock().unwrap().push_back(Command {
+        id,
+        action: incoming.action,
+    });
+}
+
+#[cfg(target_os = "android")]
+pub fn notify_widget() {
+    use jni::{JavaVM, objects::JObject};
+
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let result = env.call_static_method(
+        "org/hibalance/rhythm/widget/RhythmWidgetProvider",
+        "updateAll",
+        "(Landroid/content/Context;)V",
+        &[(&activity).into()],
+    );
+    if result.is_err() {
+        let _ = env.exception_clear();
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn notify_widget() {}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-widget-{name}-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn authoritative_state_overwrites_optimistic_widget_state() {
+        let dir = temp_dir("state");
+        let state = StateData {
+            work_active: false,
+            theme: "Dark".into(),
+            ..StateData::default()
+        };
+        write_state(&dir, &state);
+
+        let mut optimistic = state.clone();
+        optimistic.work_active = true;
+        storage::write_json(&dir.join(STATE_FILE), &optimistic).unwrap();
+
+        write_state(&dir, &state);
+        let current: StateData =
+            serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).unwrap()).unwrap();
+        assert!(!current.work_active);
+    }
+
+    #[test]
+    fn duplicate_command_ids_are_only_applied_once() {
+        let dir = temp_dir("commands");
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let command = Command {
+            id,
+            action: "work-start".into(),
+        };
+        storage::write_json(
+            &dir.join(COMMAND_FILE),
+            &CommandFile {
+                commands: vec![command.clone(), command],
+            },
+        )
+        .unwrap();
+
+        let drained = drain_commands(&dir);
+        assert_eq!(drained.len(), 1);
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_hibalance_rhythm_widget_RhythmNativeBridge_applyCommand(
+    mut env: jni::JNIEnv,
+    _this: jni::objects::JObject,
+    command: jni::objects::JString<'_>,
+) {
+    let Ok(value) = env.get_string(&command) else {
+        let _ = env.exception_clear();
+        return;
+    };
+    queue_native_command(&String::from(value));
+}

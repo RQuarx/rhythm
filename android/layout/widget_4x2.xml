@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/open_button"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@android:color/background_dark"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/work_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Not working"
+        android:textColor="@android:color/white"
+        android:textStyle="bold"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/work_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="00h 00m"
+        android:textColor="@android:color/white"
+        android:textSize="14sp" />
+
+    <ProgressBar
+        android:id="@+id/work_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:max="100" />
+
+    <TextView
+        android:id="@+id/sleep_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Awake"
+        android:textColor="@android:color/white"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/sleep_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="00h 00m"
+        android:textColor="@android:color/white"
+        android:textSize="14sp" />
+
+    <ProgressBar
+        android:id="@+id/sleep_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:max="100" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/work_start"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Start"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/work_pause"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Pause"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/work_resume"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Resume"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/work_stop"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Stop"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/sleep_start"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Bed"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/sleep_wake"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="Wake"
+            android:textSize="11sp"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

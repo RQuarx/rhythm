@@ -21,7 +21,6 @@ export component MainWindow inherits Window {
 
     in property <string> app-version;
     in property <bool> is-mobile;
-    in property <string> fatal-message;
 
     in property <Report> active-report;
     in property <int> active-report-id;
@@ -75,6 +74,7 @@ export component MainWindow inherits Window {
     in property <[ReportItem]> recent-reports;
 
     in-out property <bool> sleep-need-bedtime;
+    in property <bool> sleep-pending;
     in property <int> sleep-pending-seconds;
     in property <string> sleep-pending-hours;
     in property <string> sleep-pending-minutes;
@@ -96,6 +96,7 @@ export component MainWindow inherits Window {
     callback on-sleep-set-bedtime(string);
     callback on-sleep-cancel-bedtime();
     callback on-sleep-correct(string, string);
+    callback on-sleep-discard();
     callback toggle-period();
 
     callback rule-field-changed(int, string, string);
@@ -209,7 +210,7 @@ export component MainWindow inherits Window {
         cancel => { root.on-sleep-cancel-bedtime(); }
     }
 
-    if root.sleep-pending-seconds > 0: CorrectionDialog {
+    if root.sleep-pending: CorrectionDialog {
         x: root.safe-area-insets.left;
         y: root.safe-area-insets.top;
         width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
@@ -217,7 +218,7 @@ export component MainWindow inherits Window {
         suggested-hours: root.sleep-pending-hours;
         suggested-minutes: root.sleep-pending-minutes;
         confirm(hours, minutes) => { root.on-sleep-correct(hours, minutes); }
-        cancel => { root.on-sleep-correct(root.sleep-pending-hours, root.sleep-pending-minutes); }
+        cancel => { root.on-sleep-discard(); }
     }
 
     if root.report-visible && root.active-report.severity == ReportSeverity.Warning: WarningBanner {

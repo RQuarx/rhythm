@@ -22,6 +22,7 @@ const WARNING_DISPLAY: Duration = Duration::from_secs(5);
 struct Entry {
     id: i32,
     report: Report,
+    timer_started: bool,
 }
 
 #[derive(Default)]
@@ -143,6 +144,7 @@ impl Reporter {
                 timestamp: timestamp.into(),
                 details: details.into(),
             },
+            timer_started: false,
         };
 
         if is_fatal {
@@ -155,21 +157,13 @@ impl Reporter {
         }
         drop(state);
 
-        if let Some(body) = notification_body {
-            if let Err(e) = notification::notify("Rhythm error", &body) {
-                error!("Failed to show fatal notification: {e}");
-            }
+        if let Some(body) = notification_body
+            && let Err(e) = notification::notify("Rhythm error", &body)
+        {
+            error!("Failed to show fatal notification: {e}");
         }
 
         self.present();
-
-        if matches!(severity, ReportSeverity::Warning) {
-            let reporter = self.clone();
-            thread::spawn(move || {
-                thread::sleep(WARNING_DISPLAY);
-                reporter.dismiss(id);
-            });
-        }
     }
 
     /// Pushes the active report (or hides the overlay when there is none).
@@ -183,14 +177,45 @@ impl Reporter {
             .map(|entry| (entry.id, entry.report.clone()));
 
         let ui = self.ui.clone();
+        let reporter = self.clone();
         let _ = ui.upgrade_in_event_loop(move |ui| match active {
             Some((id, report)) => {
+                let is_warning = matches!(report.severity, ReportSeverity::Warning);
                 ui.set_active_report(report);
                 ui.set_active_report_id(id);
                 ui.set_report_visible(true);
+                if is_warning {
+                    reporter.start_warning_timer(id);
+                }
             }
             None => ui.set_report_visible(false),
         });
+    }
+
+    /// Starts the auto-dismiss timer when a warning actually becomes visible.
+    fn start_warning_timer(&self, id: i32) {
+        let should_start = {
+            let mut state = self.state.lock().unwrap();
+            match state.active.as_mut() {
+                Some(entry)
+                    if entry.id == id
+                        && matches!(entry.report.severity, ReportSeverity::Warning)
+                        && !entry.timer_started =>
+                {
+                    entry.timer_started = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+
+        if should_start {
+            let reporter = self.clone();
+            thread::spawn(move || {
+                thread::sleep(WARNING_DISPLAY);
+                reporter.dismiss(id);
+            });
+        }
     }
 }
 

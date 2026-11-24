@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -12,9 +13,9 @@ use crate::{
     report_history, settings, sleep,
     user::{
         data::UserData,
-        rules::{RuleEvaluator, TimerValues, UserRulesJson},
+        rules::{RuleEvaluator, TimerValues, TriggeredRule, UserRulesJson},
     },
-    work,
+    widget, work,
 };
 
 const DEFAULT_WORK_THRESHOLD: u64 = 27_000;
@@ -26,13 +27,13 @@ const CONDITIONS: [&str; 3] = ["more", "less", "same"];
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Failed to retrieve application directories")]
-    AppDirsError,
+    AppDirs,
 
     #[error("Failed to create application directories")]
     Io(#[from] std::io::Error),
 
     #[error("Failed to parse settings file")]
-    SettingsError(#[from] settings::Error),
+    Settings(#[from] settings::Error),
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +111,7 @@ pub struct AppSnapshot {
     pub work_paused: bool,
     pub sleeping: bool,
     pub need_bedtime: bool,
+    pub pending_active: bool,
     pub pending_seconds: u64,
     pub pending_hours: String,
     pub pending_minutes: String,
@@ -117,6 +119,12 @@ pub struct AppSnapshot {
     pub notifications_enabled: bool,
     pub quiet_start: String,
     pub quiet_end: String,
+}
+
+/// Statistics shown on the dashboard, kept separate from the per-second
+/// snapshot so the dashboard does not need to write widget state.
+#[derive(Default)]
+pub struct DashboardSnapshot {
     pub chart_max: u64,
     pub stats: DashboardStats,
 }
@@ -130,19 +138,20 @@ pub struct App {
     report_history: report_history::ReportHistory,
     evaluator: RuleEvaluator,
     reports: Box<dyn ReportSink>,
+    widget_dir: PathBuf,
     need_bedtime: bool,
-    pending_seconds: u64,
+    manual_wake_time: Option<i64>,
 }
 
 impl App {
     pub fn new(reports: Box<dyn ReportSink>) -> Result<Self, Error> {
-        tracing_subscriber::fmt()
+        let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+            .try_init();
 
         let config_path: PathBuf = match sysdirs::config_dir() {
             Some(d) => d.join("rhythm/").to_path_buf(),
-            None => return Err(Error::AppDirsError),
+            None => return Err(Error::AppDirs),
         };
         fs::create_dir_all(&config_path)?;
         info!("Using config directory {}", config_path.display());
@@ -209,18 +218,17 @@ impl App {
             }
         };
 
-        let pending_seconds = sleep.pending_seconds();
-
         Ok(Self {
             settings,
             user_data,
             work,
             sleep,
             report_history,
-            evaluator: RuleEvaluator::new(),
+            evaluator: RuleEvaluator::load(&config_path),
             reports,
+            widget_dir: config_path,
             need_bedtime: false,
-            pending_seconds,
+            manual_wake_time: None,
         })
     }
 
@@ -243,7 +251,31 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        self.evaluate(None);
+        if let Err(e) = self.report_history.reload_if_changed() {
+            error!("Failed to reload reports: {e}");
+        }
+        self.drain_widget_commands();
+        let sleep = if self.sleep.has_pending() {
+            None
+        } else {
+            self.sleep.last_night_value()
+        };
+        self.evaluate(sleep);
+    }
+
+    /// Applies commands queued by the homescreen widget.
+    pub fn drain_widget_commands(&mut self) {
+        for command in widget::drain_commands(&self.widget_dir) {
+            match command.action.as_str() {
+                "work-start" => self.start_work(),
+                "work-pause" => self.pause_work(),
+                "work-resume" => self.unpause_work(),
+                "work-stop" => self.stop_work(),
+                "sleep-start" => self.start_sleep(),
+                "sleep-wake" => self.wake_up_sleep(),
+                _ => {}
+            }
+        }
     }
 
     pub fn start_work(&mut self) {
@@ -267,23 +299,31 @@ impl App {
     }
 
     pub fn start_sleep(&mut self) {
+        if self.sleep.has_pending() {
+            self.report(
+                Severity::Warning,
+                "Sleep correction pending".into(),
+                "Confirm or discard the previous night before starting a new one.".into(),
+                String::new(),
+            );
+            return;
+        }
         let result = self.sleep.go_to_bed();
         self.report_result(result);
     }
 
     pub fn wake_up_sleep(&mut self) {
         match self.sleep.wake_up() {
-            Ok(Some(seconds)) => self.pending_seconds = seconds,
-            Ok(None) => self.need_bedtime = true,
-            Err(e) => {
-                self.report_result(Err::<(), _>(e));
-                self.pending_seconds = self.sleep.pending_seconds();
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.need_bedtime = true;
+                self.manual_wake_time = Some(Local::now().timestamp());
             }
+            Err(e) => self.report_result(Err::<(), _>(e)),
         }
     }
 
     pub fn set_bedtime(&mut self, time: &str) {
-        self.need_bedtime = false;
         let Some(minutes) = parse_clock(time) else {
             self.report(
                 Severity::Warning,
@@ -294,34 +334,48 @@ impl App {
             return;
         };
 
-        let result = self.sleep.set_bedtime_minutes(minutes);
-        self.report_result(result);
-        match self.sleep.wake_up() {
-            Ok(Some(seconds)) => self.pending_seconds = seconds,
-            Ok(None) => {}
-            Err(e) => {
-                self.report_result(Err::<(), _>(e));
-                self.pending_seconds = self.sleep.pending_seconds();
-            }
+        let wake_time = self
+            .manual_wake_time
+            .unwrap_or_else(|| Local::now().timestamp());
+        if let Err(e) = self.sleep.record_manual_night(minutes, wake_time) {
+            self.report_result(Err::<(), _>(e));
+            return;
         }
+        self.need_bedtime = false;
+        self.manual_wake_time = None;
     }
 
     pub fn cancel_bedtime(&mut self) {
         self.need_bedtime = false;
+        self.manual_wake_time = None;
     }
 
-    pub fn correct_sleep(&mut self, hours: &str, minutes: &str) {
-        let fallback = self.sleep.pending_seconds();
-        let seconds = parse_duration(hours, minutes).unwrap_or(fallback);
+    /// Discards a pending night without recording it.
+    pub fn discard_pending_sleep(&mut self) {
+        if let Err(e) = self.sleep.discard_pending() {
+            self.report_result(Err::<(), _>(e));
+        }
+    }
+
+    /// Stores a corrected sleep duration. Invalid input is reported instead of
+    /// silently falling back to the computed value.
+    pub fn correct_sleep(&mut self, hours: &str, minutes: &str) -> Result<(), String> {
+        let Some(seconds) = parse_duration(hours, minutes) else {
+            return Err("Enter hours and minutes (minutes must be below 60).".into());
+        };
 
         match self.sleep.commit_pending(seconds) {
             Ok(effective) => {
-                self.pending_seconds = 0;
                 if effective > 0 {
                     self.evaluate(Some(effective));
                 }
+                Ok(())
             }
-            Err(e) => self.report_result(Err::<(), _>(e)),
+            Err(e) => {
+                let message = e.to_string();
+                self.report_result(Err::<(), _>(e));
+                Err(message)
+            }
         }
     }
 
@@ -348,7 +402,7 @@ impl App {
             return Err(e.to_string());
         }
 
-        self.evaluator = RuleEvaluator::new();
+        self.evaluator.reset();
         Ok(())
     }
 
@@ -387,40 +441,74 @@ impl App {
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
-        let work = self.work.elapsed();
-        let max_work = self.threshold("working", DEFAULT_WORK_THRESHOLD);
-        let min_sleep = self.threshold("sleep", DEFAULT_SLEEP_THRESHOLD);
+        let work_today = self.work.today_active();
+        let work_week = self.work.week_active();
+        let max_work = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
+        let min_sleep = self.threshold("sleep", "less", DEFAULT_SLEEP_THRESHOLD);
         let current_sleep = if self.sleep.is_sleeping() {
             self.sleep.current_elapsed()
         } else {
             self.sleep.last_night()
         };
+        let pending_seconds = self.sleep.pending_seconds();
         let (quiet_start, quiet_end) = self.settings.quiet_hours();
 
+        widget::write_state(
+            &self.widget_dir,
+            &widget::StateData {
+                work_active: self.work.is_active(),
+                work_paused: self.work.is_paused(),
+                work_seconds: widget_seconds(work_today),
+                paused_seconds: widget_seconds(
+                    self.work
+                        .daily_series(1)
+                        .last()
+                        .map(|(_, _, paused)| *paused)
+                        .unwrap_or(0),
+                ),
+                sleep_active: self.sleep.is_sleeping(),
+                sleep_seconds: widget_seconds(current_sleep),
+                last_night_seconds: self.sleep.last_night(),
+                work_target: max_work,
+                sleep_target: min_sleep,
+                theme: self.settings.selected_theme().to_string(),
+                ..widget::StateData::default()
+            },
+        );
+
         AppSnapshot {
-            today_working_hour: format_duration(work),
-            week_working_hour: format_duration(work),
+            today_working_hour: format_duration(work_today),
+            week_working_hour: format_duration(work_week),
             max_working_hour: format_duration(max_work),
             today_sleeping_hour: format_duration(self.sleep.today_total()),
             week_sleeping_hour: format_duration(self.sleep.week_total()),
             min_sleeping_hour: format_duration(min_sleep),
             max_working_time: max_work,
-            current_working_time: work,
+            current_working_time: work_today,
             max_sleeping_time: min_sleep,
             current_sleeping_time: current_sleep,
             work_running: self.work.is_active(),
             work_paused: self.work.is_paused(),
             sleeping: self.sleep.is_sleeping(),
             need_bedtime: self.need_bedtime,
-            pending_seconds: self.pending_seconds,
-            pending_hours: hours_text(self.pending_seconds),
-            pending_minutes: minutes_text(self.pending_seconds),
+            pending_active: self.sleep.has_pending(),
+            pending_seconds,
+            pending_hours: hours_text(pending_seconds),
+            pending_minutes: minutes_text(pending_seconds),
             theme: self.settings.selected_theme().to_string(),
             notifications_enabled: self.settings.notifications_enabled(),
             quiet_start: clock_text(quiet_start),
             quiet_end: clock_text(quiet_end),
-            chart_max: self.chart_max(max_work, min_sleep),
-            stats: self.dashboard_stats(7, work, min_sleep),
+        }
+    }
+
+    pub fn dashboard_snapshot(&self, period: UsagePeriod) -> DashboardSnapshot {
+        let max_work = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
+        let min_sleep = self.threshold("sleep", "less", DEFAULT_SLEEP_THRESHOLD);
+        let current_work = self.work.today_active();
+        DashboardSnapshot {
+            chart_max: self.chart_max(period, max_work, min_sleep),
+            stats: self.dashboard_stats(7, current_work, min_sleep),
         }
     }
 
@@ -442,10 +530,10 @@ impl App {
         self.report_history.reports().to_vec()
     }
 
-    fn chart_max(&self, work_target: u64, sleep_target: u64) -> u64 {
-        self.usage_series(UsagePeriod::Month)
+    fn chart_max(&self, period: UsagePeriod, work_target: u64, sleep_target: u64) -> u64 {
+        self.usage_series(period)
             .iter()
-            .flat_map(|day| [day.work, day.paused, day.sleep])
+            .map(|day| day.work + day.paused + day.sleep)
             .max()
             .unwrap_or(0)
             .max(work_target)
@@ -454,20 +542,25 @@ impl App {
     }
 
     fn dashboard_stats(&self, days: usize, current_work: u64, sleep_target: u64) -> DashboardStats {
-        let work_target = self.threshold("working", DEFAULT_WORK_THRESHOLD);
+        let work_target = self.threshold("working", "more", DEFAULT_WORK_THRESHOLD);
         let series = self.usage_series(UsagePeriod::Week);
-        let divisor = days.max(1) as u64;
-        let average_work: u64 = series.iter().take(days).map(|day| day.work).sum::<u64>() / divisor;
-        let average_sleep: u64 =
-            series.iter().take(days).map(|day| day.sleep).sum::<u64>() / divisor;
+        let window: Vec<&DayUsage> = series.iter().take(days).collect();
+        let observed_days = window
+            .iter()
+            .position(|day| day.work > 0 || day.paused > 0 || day.sleep > 0)
+            .map(|first| window.len() - first)
+            .unwrap_or(1)
+            .max(1) as u64;
+        let average_work: u64 = window.iter().map(|day| day.work).sum::<u64>() / observed_days;
+        let average_sleep: u64 = window.iter().map(|day| day.sleep).sum::<u64>() / observed_days;
 
-        let mut streak = 0;
+        let mut streak: u32 = 0;
         for (index, day) in series.iter().rev().enumerate() {
+            if index == 0 && day.sleep == 0 {
+                // Today's night may not be recorded yet; judge yesterday instead.
+                continue;
+            }
             if day.work == 0 && day.sleep == 0 {
-                // Today may simply not be over yet; don't break the streak.
-                if index == 0 {
-                    continue;
-                }
                 break;
             }
             if day.work <= work_target && day.sleep >= sleep_target && day.sleep > 0 {
@@ -508,42 +601,37 @@ impl App {
         }
     }
 
-    fn threshold(&self, timer: &str, fallback: u64) -> u64 {
-        self.user_data
-            .rules()
+    fn threshold(&self, timer: &str, condition: &str, fallback: u64) -> u64 {
+        let rules = self.user_data.rules();
+        rules
             .iter()
-            .find(|rule| rule.which_timer == timer)
+            .find(|rule| rule.which_timer == timer && rule.trigger_if == condition)
+            .or_else(|| rules.iter().find(|rule| rule.which_timer == timer))
             .map(|rule| rule.trigger_time)
             .unwrap_or(fallback)
     }
 
-    fn rule_warnings_enabled(&self) -> bool {
-        if !self.settings.notifications_enabled() {
-            return false;
-        }
-        let (start, end) = self.settings.quiet_hours();
-        if start == end {
-            return true;
-        }
-        let time = Local::now().time();
-        let minutes = time.hour() as u16 * 60 + time.minute() as u16;
-        !is_quiet_hours(start, end, minutes)
-    }
-
     fn evaluate(&mut self, sleep_value: Option<u64>) {
+        if !self.settings.warnings_enabled() {
+            // Don't consume the crossing state while notifications are muted;
+            // otherwise the warning is lost until the condition resets.
+            return;
+        }
+
         let time = Local::now().time();
         let system = time.hour() as u64 * 3600 + time.minute() as u64 * 60 + time.second() as u64;
         let values = TimerValues {
-            working: self.work.elapsed(),
+            working: self.work.today_active(),
             sleep: sleep_value,
             system,
         };
-        let warnings_enabled = self.rule_warnings_enabled();
 
         for rule in self.evaluator.evaluate(self.user_data.rules(), &values) {
-            if warnings_enabled {
-                self.report(Severity::Warning, rule.name, rule.message, String::new());
+            let TriggeredRule { name, message } = rule;
+            if let Err(e) = crate::notification::notify(&name, &message) {
+                error!("Failed to show rule notification: {e}");
             }
+            self.report(Severity::Warning, name, message, String::new());
         }
     }
 }
@@ -578,6 +666,12 @@ pub fn error_details(error: &(dyn std::error::Error + 'static)) -> String {
 
 fn format_duration(seconds: u64) -> String {
     format!("{:02}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
+}
+
+/// The widget only displays minutes, so round second-based values to avoid
+/// rewriting its state file and calling JNI on every tick.
+fn widget_seconds(seconds: u64) -> u64 {
+    seconds / 60 * 60
 }
 
 fn percentage(value: u64, target: u64) -> i32 {
@@ -615,7 +709,9 @@ fn parse_duration(hours: &str, minutes: &str) -> Option<u64> {
     if minutes >= 60 {
         return None;
     }
-    Some(hours * 3600 + minutes * 60)
+    hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)
 }
 
 fn parse_duration_fields(hours: &str, minutes: &str, label: &str) -> Result<u64, String> {
@@ -625,6 +721,7 @@ fn parse_duration_fields(hours: &str, minutes: &str, label: &str) -> Result<u64,
 
 fn build_rules(configs: &[RuleConfig]) -> Result<Vec<UserRulesJson>, String> {
     let mut rules = Vec::with_capacity(configs.len());
+    let mut ids = HashSet::new();
     for config in configs {
         let name = config.name.trim().to_string();
         let message = config.message.trim().to_string();
@@ -657,6 +754,9 @@ fn build_rules(configs: &[RuleConfig]) -> Result<Vec<UserRulesJson>, String> {
         } else {
             config.id.trim().to_string()
         };
+        if !ids.insert(id.clone()) {
+            return Err(format!("Duplicate rule id '{id}'."));
+        }
 
         rules.push(UserRulesJson {
             id,
@@ -669,18 +769,6 @@ fn build_rules(configs: &[RuleConfig]) -> Result<Vec<UserRulesJson>, String> {
         });
     }
     Ok(rules)
-}
-
-/// Quiet hours may wrap around midnight. Equal start/end means no quiet window.
-fn is_quiet_hours(start: u16, end: u16, minutes: u16) -> bool {
-    if start == end {
-        return false;
-    }
-    if start < end {
-        minutes >= start && minutes < end
-    } else {
-        minutes >= start || minutes < end
-    }
 }
 
 #[cfg(test)]
@@ -701,6 +789,7 @@ mod tests {
         assert_eq!(parse_duration("7", "30"), Some(27_000));
         assert_eq!(parse_duration("abc", "30"), None);
         assert_eq!(parse_duration("7", "60"), None);
+        assert_eq!(parse_duration("18446744073709551615", "0"), None);
     }
 
     #[test]
@@ -719,10 +808,10 @@ mod tests {
     fn quiet_hours_can_cross_midnight() {
         let start = 22 * 60;
         let end = 7 * 60;
-        assert!(is_quiet_hours(start, end, 23 * 60));
-        assert!(is_quiet_hours(start, end, 3 * 60));
-        assert!(!is_quiet_hours(start, end, 12 * 60));
-        assert!(!is_quiet_hours(start, start, 23 * 60));
+        assert!(settings::is_quiet_hours(start, end, 23 * 60));
+        assert!(settings::is_quiet_hours(start, end, 3 * 60));
+        assert!(!settings::is_quiet_hours(start, end, 12 * 60));
+        assert!(!settings::is_quiet_hours(start, start, 23 * 60));
     }
 
     #[test]
@@ -738,10 +827,11 @@ mod tests {
             tolerance_hours: "0".into(),
             tolerance_minutes: "15".into(),
         };
-        let rules = build_rules(&[config.clone()]).unwrap();
+        let rules = build_rules(std::slice::from_ref(&config)).unwrap();
         assert_eq!(rules[0].id, "custom");
         assert_eq!(rules[0].trigger_time, 27_000);
         assert_eq!(rules[0].tolerance, 900);
+        assert!(build_rules(&[config.clone(), config.clone()]).is_err());
 
         let invalid = RuleConfig {
             which_timer: "unknown".into(),

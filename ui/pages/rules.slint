@@ -12,6 +12,29 @@ export struct RuleEdit {
     tolerance-minutes: string,
 }
 
+// `text` cannot stay bound to a model value because typing breaks the binding.
+// The wrapper tracks the model value separately and pushes external updates
+// into the editable text.
+component RuleLineEdit inherits LineEdit {
+    in property <string> value;
+    init => { self.text = self.value; }
+    changed value => {
+        if self.text != self.value {
+            self.text = self.value;
+        }
+    }
+}
+
+component RuleComboBox inherits ComboBox {
+    in property <string> value;
+    init => { self.current-value = self.value; }
+    changed value => {
+        if self.current-value != self.value {
+            self.current-value = self.value;
+        }
+    }
+}
+
 export component RulesPage inherits Rectangle {
     in property <[RuleEdit]> rules;
 
@@ -54,41 +77,41 @@ export component RulesPage inherits Rectangle {
                     }
 
                     Text { text: "Name"; }
-                    LineEdit {
-                        text: rule.name;
+                    RuleLineEdit {
+                        value: rule.name;
                         edited(value) => { root.field-changed(index, "name", value); }
                     }
 
                     Text { text: "Message"; }
-                    LineEdit {
-                        text: rule.message;
+                    RuleLineEdit {
+                        value: rule.message;
                         edited(value) => { root.field-changed(index, "message", value); }
                     }
 
                     Text { text: "Timer"; }
-                    ComboBox {
+                    RuleComboBox {
                         model: ["working", "sleep", "system"];
-                        current-value: rule.which-timer;
+                        value: rule.which-timer;
                         selected(value) => { root.field-changed(index, "which-timer", value); }
                     }
 
                     Text { text: "Condition"; }
-                    ComboBox {
+                    RuleComboBox {
                         model: ["more", "less", "same"];
-                        current-value: rule.trigger-if;
+                        value: rule.trigger-if;
                         selected(value) => { root.field-changed(index, "trigger-if", value); }
                     }
 
                     Text { text: "Trigger after"; }
                     HorizontalLayout {
                         spacing: 0.5rem;
-                        LineEdit {
-                            text: rule.trigger-hours;
+                        RuleLineEdit {
+                            value: rule.trigger-hours;
                             edited(value) => { root.field-changed(index, "trigger-hours", value); }
                         }
                         Text { text: "h"; vertical-alignment: center; }
-                        LineEdit {
-                            text: rule.trigger-minutes;
+                        RuleLineEdit {
+                            value: rule.trigger-minutes;
                             edited(value) => { root.field-changed(index, "trigger-minutes", value); }
                         }
                         Text { text: "m"; vertical-alignment: center; }
@@ -97,13 +120,13 @@ export component RulesPage inherits Rectangle {
                     Text { text: "Tolerance"; }
                     HorizontalLayout {
                         spacing: 0.5rem;
-                        LineEdit {
-                            text: rule.tolerance-hours;
+                        RuleLineEdit {
+                            value: rule.tolerance-hours;
                             edited(value) => { root.field-changed(index, "tolerance-hours", value); }
                         }
                         Text { text: "h"; vertical-alignment: center; }
-                        LineEdit {
-                            text: rule.tolerance-minutes;
+                        RuleLineEdit {
+                            value: rule.tolerance-minutes;
                             edited(value) => { root.field-changed(index, "tolerance-minutes", value); }
                         }
                         Text { text: "m"; vertical-alignment: center; }

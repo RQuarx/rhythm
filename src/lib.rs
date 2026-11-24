@@ -7,10 +7,13 @@ mod app;
 mod notification;
 mod report_history;
 mod reporter;
+#[cfg(any(target_os = "android", test))]
+mod rule_check;
 mod settings;
 mod sleep;
 mod storage;
 mod user;
+mod widget;
 mod work;
 
 pub use app::error_details;
@@ -37,7 +40,6 @@ pub fn run(mobile: bool) -> Result<(), Error> {
     let reporter = reporter::Reporter::new(ui.as_weak());
 
     ui.set_is_mobile(mobile);
-    ui.on_page_changed(|index| println!("{index}"));
     ui.on_report_dismissed({
         let reporter = reporter.clone();
         move |id| reporter.dismiss(id)
@@ -49,6 +51,7 @@ pub fn run(mobile: bool) -> Result<(), Error> {
             ui.set_app_version(app::App::version().into());
 
             let app = Rc::new(RefCell::new(app));
+            app.borrow_mut().drain_widget_commands();
 
             let refresh = {
                 let app = app.clone();
@@ -64,17 +67,18 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                         ui.set_week_sleeping_hour(snapshot.week_sleeping_hour.into());
                         ui.set_min_sleeping_hour(snapshot.min_sleeping_hour.into());
 
-                        ui.set_max_working_time(snapshot.max_working_time as i32);
-                        ui.set_current_working_time(snapshot.current_working_time as i32);
-                        ui.set_max_sleeping_time(snapshot.max_sleeping_time as i32);
-                        ui.set_current_sleeping_time(snapshot.current_sleeping_time as i32);
+                        ui.set_max_working_time(to_i32(snapshot.max_working_time));
+                        ui.set_current_working_time(to_i32(snapshot.current_working_time));
+                        ui.set_max_sleeping_time(to_i32(snapshot.max_sleeping_time));
+                        ui.set_current_sleeping_time(to_i32(snapshot.current_sleeping_time));
 
                         ui.set_work_running(snapshot.work_running);
                         ui.set_work_paused(snapshot.work_paused);
                         ui.set_sleeping(snapshot.sleeping);
 
                         ui.set_sleep_need_bedtime(snapshot.need_bedtime);
-                        ui.set_sleep_pending_seconds(snapshot.pending_seconds as i32);
+                        ui.set_sleep_pending(snapshot.pending_active);
+                        ui.set_sleep_pending_seconds(to_i32(snapshot.pending_seconds));
                         ui.set_sleep_pending_hours(snapshot.pending_hours.into());
                         ui.set_sleep_pending_minutes(snapshot.pending_minutes.into());
                     }
@@ -121,20 +125,23 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                         } else {
                             UsagePeriod::Week
                         };
-                        let days = app.borrow().usage_series(period);
+                        let (days, reports, dashboard) = {
+                            let app = app.borrow();
+                            (
+                                app.usage_series(period),
+                                app.recent_reports(),
+                                app.dashboard_snapshot(period),
+                            )
+                        };
                         usage_model.set_vec(days.iter().map(day_to_slint).collect::<Vec<_>>());
-
-                        let reports = app.borrow().recent_reports();
                         report_model
                             .set_vec(reports.iter().map(report_to_slint).collect::<Vec<_>>());
-
-                        let snapshot = app.borrow().snapshot();
-                        ui.set_chart_max(snapshot.chart_max as i32);
-                        ui.set_average_work(snapshot.stats.average_work.into());
-                        ui.set_average_sleep(snapshot.stats.average_sleep.into());
-                        ui.set_streak(snapshot.stats.streak as i32);
-                        ui.set_work_goal_percent(snapshot.stats.work_goal_percent);
-                        ui.set_sleep_goal_percent(snapshot.stats.sleep_goal_percent);
+                        ui.set_chart_max(to_i32(dashboard.chart_max));
+                        ui.set_average_work(dashboard.stats.average_work.into());
+                        ui.set_average_sleep(dashboard.stats.average_sleep.into());
+                        ui.set_streak(to_i32(dashboard.stats.streak as u64));
+                        ui.set_work_goal_percent(dashboard.stats.work_goal_percent);
+                        ui.set_sleep_goal_percent(dashboard.stats.sleep_goal_percent);
                     }
                 }
             };
@@ -219,10 +226,23 @@ pub fn run(mobile: bool) -> Result<(), Error> {
             });
             ui.on_on_sleep_correct({
                 let app = app.clone();
+                let reporter = reporter.clone();
                 let refresh = refresh.clone();
                 move |hours: SharedString, minutes: SharedString| {
-                    app.borrow_mut()
+                    let result = app
+                        .borrow_mut()
                         .correct_sleep(hours.as_str(), minutes.as_str());
+                    if let Err(message) = result {
+                        reporter.warning("Could not save sleep", message, "");
+                    }
+                    refresh();
+                }
+            });
+            ui.on_on_sleep_discard({
+                let app = app.clone();
+                let refresh = refresh.clone();
+                move || {
+                    app.borrow_mut().discard_pending_sleep();
                     refresh();
                 }
             });
@@ -279,8 +299,12 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                 let model = rule_model.clone();
                 move || {
                     let configs = read_rule_rows(&model);
-                    match app.borrow_mut().save_rules(configs) {
-                        Ok(()) => set_rule_rows(&model, app.borrow().rule_configs()),
+                    let result = app.borrow_mut().save_rules(configs);
+                    match result {
+                        Ok(()) => {
+                            let configs = app.borrow().rule_configs();
+                            set_rule_rows(&model, configs);
+                        }
                         Err(message) => reporter.warning("Could not save rules", message, ""),
                     }
                 }
@@ -304,6 +328,7 @@ pub fn run(mobile: bool) -> Result<(), Error> {
                         Ok(()) => refresh_settings(),
                         Err(message) => {
                             reporter.warning("Could not save settings", message, "");
+                            refresh_settings();
                         }
                     }
                 }
@@ -324,10 +349,14 @@ pub fn run(mobile: bool) -> Result<(), Error> {
 fn day_to_slint(day: &AppDayUsage) -> DayUsage {
     DayUsage {
         label: day.label.clone().into(),
-        work: day.work as i32,
-        paused: day.paused as i32,
-        sleep: day.sleep as i32,
+        work: to_i32(day.work),
+        paused: to_i32(day.paused),
+        sleep: to_i32(day.sleep),
     }
+}
+
+fn to_i32(value: u64) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
 }
 
 fn report_to_slint(report: &report_history::ReportRecord) -> ReportItem {
