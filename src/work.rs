@@ -41,6 +41,7 @@ struct WorkJson {
     intervals: Vec<WorkInterval>,
 }
 
+#[derive(Clone, Copy)]
 enum WorkState {
     Stopped,
     Running { since: i64 },
@@ -106,6 +107,14 @@ impl WorkTimer {
 
     pub fn is_paused(&self) -> bool {
         matches!(self.state, WorkState::Paused { .. })
+    }
+
+    /// Seconds spent in the current pause, or zero when not paused.
+    pub fn current_pause_elapsed(&self) -> u64 {
+        match self.state {
+            WorkState::Paused { since } => now().saturating_sub(since) as u64,
+            WorkState::Stopped | WorkState::Running { .. } => 0,
+        }
     }
 
     #[cfg(test)]
@@ -201,58 +210,109 @@ impl WorkTimer {
     }
 
     pub fn start(&mut self) -> Result<(), Error> {
+        self.start_at(now())
+    }
+
+    /// Starts the timer at a timestamp captured by the caller. Used for
+    /// widget commands that may be applied long after the button press.
+    pub fn start_at(&mut self, at: i64) -> Result<(), Error> {
         if !matches!(self.state, WorkState::Stopped) {
             return Ok(());
         }
-        self.state = WorkState::Running { since: now() };
-        self.save()
+        let previous = self.state;
+        self.state = WorkState::Running {
+            since: event_time(at),
+        };
+        if let Err(e) = self.save() {
+            self.state = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn pause(&mut self) -> Result<(), Error> {
+        self.pause_at(now())
+    }
+
+    pub fn pause_at(&mut self, at: i64) -> Result<(), Error> {
         let WorkState::Running { since } = self.state else {
             return Ok(());
         };
-        let now = now();
+        let at = event_time(at).max(since);
+        let previous = self.state;
         self.intervals.push(WorkInterval {
             start: since,
-            end: now,
+            end: at,
             active: true,
         });
-        self.state = WorkState::Paused { since: now };
-        self.save()
+        self.state = WorkState::Paused { since: at };
+        if let Err(e) = self.save() {
+            self.intervals.pop();
+            self.state = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn unpause(&mut self) -> Result<(), Error> {
+        self.unpause_at(now())
+    }
+
+    pub fn unpause_at(&mut self, at: i64) -> Result<(), Error> {
         let WorkState::Paused { since } = self.state else {
             return Ok(());
         };
-        let now = now();
+        let at = event_time(at).max(since);
+        let previous = self.state;
         self.intervals.push(WorkInterval {
             start: since,
-            end: now,
+            end: at,
             active: false,
         });
-        self.state = WorkState::Running { since: now };
-        self.save()
+        self.state = WorkState::Running { since: at };
+        if let Err(e) = self.save() {
+            self.intervals.pop();
+            self.state = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), Error> {
-        let now = now();
-        match self.state {
-            WorkState::Running { since } => self.intervals.push(WorkInterval {
-                start: since,
-                end: now,
-                active: true,
-            }),
-            WorkState::Paused { since } => self.intervals.push(WorkInterval {
-                start: since,
-                end: now,
-                active: false,
-            }),
-            WorkState::Stopped => {}
-        }
+        self.stop_at(now())
+    }
+
+    pub fn stop_at(&mut self, at: i64) -> Result<(), Error> {
+        let at = event_time(at);
+        let previous = self.state;
+        let pushed = match self.state {
+            WorkState::Running { since } => {
+                self.intervals.push(WorkInterval {
+                    start: since,
+                    end: at.max(since),
+                    active: true,
+                });
+                true
+            }
+            WorkState::Paused { since } => {
+                self.intervals.push(WorkInterval {
+                    start: since,
+                    end: at.max(since),
+                    active: false,
+                });
+                true
+            }
+            WorkState::Stopped => false,
+        };
         self.state = WorkState::Stopped;
-        self.save()
+        if let Err(e) = self.save() {
+            if pushed {
+                self.intervals.pop();
+            }
+            self.state = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn save(&self) -> Result<(), Error> {
@@ -282,6 +342,17 @@ impl WorkTimer {
 
 fn now() -> i64 {
     Local::now().timestamp()
+}
+
+/// Clamps a queued event timestamp to a sane range: queued commands can be
+/// old, and device clocks can move backwards.
+fn event_time(at: i64) -> i64 {
+    let now = now();
+    if at <= 0 {
+        now
+    } else {
+        at.clamp(now - MAX_DAYS * 24 * 60 * 60, now)
+    }
 }
 
 fn local_datetime(naive: NaiveDateTime) -> Option<chrono::DateTime<Local>> {
@@ -398,6 +469,48 @@ mod tests {
 
     fn timer() -> WorkTimer {
         WorkTimer::new(Path::new("/tmp"))
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-work-{label}-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn pause_elapsed_only_counts_the_current_pause() {
+        let mut timer = timer();
+        timer.state = WorkState::Paused { since: now() - 120 };
+        assert!(timer.current_pause_elapsed() >= 120);
+
+        timer.state = WorkState::Stopped;
+        assert_eq!(timer.current_pause_elapsed(), 0);
+    }
+
+    #[test]
+    fn queued_start_uses_the_original_timestamp() {
+        let dir = temp_dir("start-at");
+        let mut timer = WorkTimer::new(&dir);
+        timer.start_at(now() - 120).unwrap();
+
+        assert!(timer.is_active());
+        assert!(!timer.is_paused());
+        assert!(timer.elapsed() >= 120);
+    }
+
+    #[test]
+    fn failed_save_does_not_leave_the_timer_active() {
+        let dir = temp_dir("save-failure");
+        let not_a_dir = dir.join("file");
+        fs::write(&not_a_dir, "not a directory").unwrap();
+        let mut timer = WorkTimer::new(&not_a_dir);
+
+        assert!(timer.start_at(now()).is_err());
+        assert!(!timer.is_active());
     }
 
     #[test]

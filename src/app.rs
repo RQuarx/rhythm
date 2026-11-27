@@ -19,6 +19,7 @@ use crate::{
 };
 
 const DEFAULT_SLEEP_THRESHOLD: u64 = 25_200;
+const MAX_EVENT_AGE: i64 = 60 * 24 * 60 * 60;
 const THEMES: [&str; 3] = ["System", "Dark", "Light"];
 const TIMERS: [&str; 3] = ["working", "sleep", "system"];
 const CONDITIONS: [&str; 3] = ["more", "less", "same"];
@@ -306,13 +307,14 @@ impl App {
     /// Applies commands queued by the homescreen widget.
     pub fn drain_widget_commands(&mut self) {
         for command in widget::drain_commands(&self.widget_dir) {
+            let at = command.at;
             match command.action.as_str() {
-                "work-start" => self.start_work(),
-                "work-pause" => self.pause_work(),
-                "work-resume" => self.unpause_work(),
-                "work-stop" => self.stop_work(),
-                "sleep-start" => self.start_sleep(),
-                "sleep-wake" => self.wake_up_sleep(),
+                "work-start" => self.start_work_at(at),
+                "work-pause" => self.pause_work_at(at),
+                "work-resume" => self.unpause_work_at(at),
+                "work-stop" => self.stop_work_at(at),
+                "sleep-start" => self.start_sleep_at(at),
+                "sleep-wake" => self.wake_up_sleep_at(at),
                 _ => {}
             }
         }
@@ -323,8 +325,18 @@ impl App {
         self.report_result(result);
     }
 
+    fn start_work_at(&mut self, at: i64) {
+        let result = self.work.start_at(at);
+        self.report_result(result);
+    }
+
     pub fn pause_work(&mut self) {
         let result = self.work.pause();
+        self.report_result(result);
+    }
+
+    fn pause_work_at(&mut self, at: i64) {
+        let result = self.work.pause_at(at);
         self.report_result(result);
     }
 
@@ -333,12 +345,38 @@ impl App {
         self.report_result(result);
     }
 
+    fn unpause_work_at(&mut self, at: i64) {
+        let result = self.work.unpause_at(at);
+        self.report_result(result);
+    }
+
     pub fn stop_work(&mut self) {
         let result = self.work.stop();
         self.report_result(result);
     }
 
+    fn stop_work_at(&mut self, at: i64) {
+        let result = self.work.stop_at(at);
+        self.report_result(result);
+    }
+
     pub fn start_sleep(&mut self) {
+        if !self.can_start_sleep() {
+            return;
+        }
+        let result = self.sleep.go_to_bed();
+        self.report_result(result);
+    }
+
+    fn start_sleep_at(&mut self, at: i64) {
+        if !self.can_start_sleep() {
+            return;
+        }
+        let result = self.sleep.go_to_bed_at(at);
+        self.report_result(result);
+    }
+
+    fn can_start_sleep(&mut self) -> bool {
         if self.sleep.has_pending() {
             self.report(
                 Severity::Warning,
@@ -346,13 +384,24 @@ impl App {
                 "Confirm or discard the previous night before starting a new one.".into(),
                 String::new(),
             );
-            return;
+            return false;
         }
-        let result = self.sleep.go_to_bed();
-        self.report_result(result);
+        if self.need_bedtime {
+            self.report(
+                Severity::Warning,
+                "Bedtime pending".into(),
+                "Enter or cancel the previous bedtime before starting a new night.".into(),
+                String::new(),
+            );
+            return false;
+        }
+        true
     }
 
     pub fn wake_up_sleep(&mut self) {
+        if !self.can_wake_up_sleep() {
+            return;
+        }
         match self.sleep.wake_up() {
             Ok(Some(_)) => {}
             Ok(None) => {
@@ -361,6 +410,35 @@ impl App {
             }
             Err(e) => self.report_result(Err::<(), _>(e)),
         }
+    }
+
+    fn wake_up_sleep_at(&mut self, at: i64) {
+        if !self.can_wake_up_sleep() {
+            return;
+        }
+        match self.sleep.wake_up_at(at) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.need_bedtime = true;
+                // Preserve when the user actually pressed "Woke up" so the
+                // manual bedtime prompt does not include the response delay.
+                self.manual_wake_time = Some(event_time(at));
+            }
+            Err(e) => self.report_result(Err::<(), _>(e)),
+        }
+    }
+
+    fn can_wake_up_sleep(&mut self) -> bool {
+        if self.sleep.has_pending() {
+            self.report(
+                Severity::Warning,
+                "Sleep correction pending".into(),
+                "Confirm or discard the previous night before starting a new one.".into(),
+                String::new(),
+            );
+            return false;
+        }
+        true
     }
 
     pub fn set_bedtime(&mut self, time: &str) {
@@ -373,6 +451,24 @@ impl App {
             );
             return;
         };
+        if self.sleep.is_sleeping() {
+            self.report(
+                Severity::Warning,
+                "Already sleeping".into(),
+                "Wake up before entering a bedtime for the previous night.".into(),
+                String::new(),
+            );
+            return;
+        }
+        if self.sleep.has_pending() {
+            self.report(
+                Severity::Warning,
+                "Sleep correction pending".into(),
+                "Confirm or discard the previous night before recording another one.".into(),
+                String::new(),
+            );
+            return;
+        }
 
         let wake_time = self
             .manual_wake_time
@@ -518,13 +614,9 @@ impl App {
                 work_active: self.work.is_active(),
                 work_paused: self.work.is_paused(),
                 work_seconds: widget_seconds(work_today),
-                paused_seconds: widget_seconds(
-                    self.work
-                        .daily_series(1)
-                        .last()
-                        .map(|(_, _, paused)| *paused)
-                        .unwrap_or(0),
-                ),
+                // The widget shows this next to "Paused", so it must be the
+                // current pause, not the total paused time for the day.
+                paused_seconds: widget_seconds(self.work.current_pause_elapsed()),
                 sleep_active: self.sleep.is_sleeping(),
                 sleep_seconds: widget_seconds(current_sleep),
                 last_night_seconds: self.sleep.last_night(),
@@ -794,6 +886,17 @@ pub fn error_details(error: &(dyn std::error::Error + 'static)) -> String {
         source = cause.source();
     }
     details
+}
+
+/// Clamps a widget command timestamp so an old queue entry or a backwards
+/// clock change cannot create absurd intervals.
+fn event_time(at: i64) -> i64 {
+    let now = Local::now().timestamp();
+    if at <= 0 {
+        now
+    } else {
+        at.clamp(now - MAX_EVENT_AGE, now)
+    }
 }
 
 fn format_duration(seconds: u64) -> String {

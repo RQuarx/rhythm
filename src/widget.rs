@@ -58,6 +58,11 @@ impl Default for StateData {
 pub struct Command {
     pub id: u64,
     pub action: String,
+    /// Unix timestamp (seconds) of the widget press. Commands can sit in the
+    /// queue for a long time when the app is not running; applying them at the
+    /// time they were pressed keeps the recorded intervals accurate.
+    #[serde(default)]
+    pub at: i64,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -105,9 +110,21 @@ pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
     let file_commands = read_command_file(config_dir);
     let mut commands: Vec<Command> = NATIVE_COMMANDS.lock().unwrap().drain(..).collect();
     commands.extend(file_commands);
-    commands.sort_by_key(|command| command.id);
 
     let mut last_id = LAST_COMMAND_ID.lock().unwrap();
+
+    // Older callers may send a command without an id. Assign one before the
+    // id filter below; otherwise the synthesized id would look like an
+    // already-applied command and be dropped.
+    let mut next_id = (*last_id).saturating_add(1);
+    for command in &mut commands {
+        if command.id == 0 {
+            command.id = next_id;
+            next_id = next_id.saturating_add(1);
+        }
+    }
+    commands.sort_by_key(|command| command.id);
+
     let mut seen = HashSet::new();
     let fresh: Vec<Command> = commands
         .into_iter()
@@ -160,20 +177,16 @@ fn queue_native_command(json: &str) {
         action: String,
         #[serde(default)]
         id: u64,
+        #[serde(default)]
+        at: i64,
     }
     let Ok(incoming) = serde_json::from_str::<Incoming>(json) else {
         return;
     };
-    let id = if incoming.id == 0 {
-        let mut last = LAST_COMMAND_ID.lock().unwrap();
-        *last += 1;
-        *last
-    } else {
-        incoming.id
-    };
     NATIVE_COMMANDS.lock().unwrap().push_back(Command {
-        id,
+        id: incoming.id,
         action: incoming.action,
+        at: incoming.at,
     });
 }
 
@@ -219,6 +232,15 @@ mod tests {
         dir
     }
 
+    /// Draining updates a process-wide high-water mark. Serialize the tests
+    /// that use it and reset it so their ids cannot interfere.
+    fn drain_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap();
+        *LAST_COMMAND_ID.lock().unwrap() = 0;
+        guard
+    }
+
     #[test]
     fn authoritative_state_overwrites_optimistic_widget_state() {
         let dir = temp_dir("state");
@@ -241,14 +263,12 @@ mod tests {
 
     #[test]
     fn duplicate_command_ids_are_only_applied_once() {
+        let _guard = drain_guard();
         let dir = temp_dir("commands");
-        let id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
         let command = Command {
-            id,
+            id: 42,
             action: "work-start".into(),
+            at: 0,
         };
         storage::write_json(
             &dir.join(COMMAND_FILE),
@@ -260,6 +280,29 @@ mod tests {
 
         let drained = drain_commands(&dir);
         assert_eq!(drained.len(), 1);
+    }
+
+    #[test]
+    fn commands_without_ids_are_not_dropped() {
+        let _guard = drain_guard();
+        let dir = temp_dir("idless");
+        storage::write_json(
+            &dir.join(COMMAND_FILE),
+            &CommandFile {
+                commands: vec![Command {
+                    id: 0,
+                    action: "work-start".into(),
+                    at: 1_700_000_000,
+                }],
+            },
+        )
+        .unwrap();
+
+        let drained = drain_commands(&dir);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].action, "work-start");
+        assert_eq!(drained[0].at, 1_700_000_000);
+        assert!(drained[0].id > 0);
     }
 }
 

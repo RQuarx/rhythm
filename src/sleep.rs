@@ -114,10 +114,14 @@ impl SleepTracker {
 
     /// Discards a pending night without recording it.
     pub fn discard_pending(&mut self) -> Result<(), Error> {
-        if self.pending.take().is_none() {
+        let Some(pending) = self.pending.take() else {
             return Ok(());
+        };
+        if let Err(e) = self.save() {
+            self.pending = Some(pending);
+            return Err(e);
         }
-        self.save()
+        Ok(())
     }
 
     /// Seconds since the recorded bedtime, without triggering any rules.
@@ -128,8 +132,22 @@ impl SleepTracker {
     }
 
     pub fn go_to_bed(&mut self) -> Result<(), Error> {
-        self.bedtime = Some(now());
-        self.save()
+        self.go_to_bed_at(now())
+    }
+
+    /// Records bedtime at a timestamp captured by the caller. A second
+    /// "going to bed" action is a no-op instead of resetting the start time.
+    pub fn go_to_bed_at(&mut self, at: i64) -> Result<(), Error> {
+        if self.bedtime.is_some() {
+            return Ok(());
+        }
+        let at = event_time(at);
+        self.bedtime = Some(at);
+        if let Err(e) = self.save() {
+            self.bedtime = None;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Creates a pending night for a manually entered bedtime. `wake_time` is
@@ -145,28 +163,41 @@ impl SleepTracker {
             return Err(Error::InvalidTime);
         }
         let seconds = (wake_time - bedtime) as u64;
-        self.pending = Some(PendingNight {
+        let previous = self.pending.replace(PendingNight {
             bedtime,
             wake_time,
             seconds,
         });
-        self.save()?;
+        if let Err(e) = self.save() {
+            self.pending = previous;
+            return Err(e);
+        }
         Ok(seconds)
     }
 
     /// Ends the current interval and returns its raw duration for correction.
     pub fn wake_up(&mut self) -> Result<Option<u64>, Error> {
+        self.wake_up_at(now())
+    }
+
+    /// Ends the current interval at a timestamp captured by the caller. Used
+    /// for widget commands that may be applied after the fact.
+    pub fn wake_up_at(&mut self, at: i64) -> Result<Option<u64>, Error> {
         let Some(bedtime) = self.bedtime.take() else {
             return Ok(None);
         };
-        let wake_time = now();
+        let wake_time = event_time(at).max(bedtime.saturating_add(1));
         let seconds = wake_time.saturating_sub(bedtime) as u64;
-        self.pending = Some(PendingNight {
+        let previous = self.pending.replace(PendingNight {
             bedtime,
             wake_time,
             seconds,
         });
-        self.save()?;
+        if let Err(e) = self.save() {
+            self.bedtime = Some(bedtime);
+            self.pending = previous;
+            return Err(e);
+        }
         Ok(Some(seconds))
     }
 
@@ -175,6 +206,7 @@ impl SleepTracker {
         let Some(pending) = self.pending.take() else {
             return Ok(0);
         };
+        let previous_nights = self.nights.clone();
         self.nights.push(NightRecord {
             bedtime: pending.bedtime,
             wake_time: pending.wake_time,
@@ -183,7 +215,11 @@ impl SleepTracker {
         if self.nights.len() > MAX_NIGHTS {
             self.nights.drain(..self.nights.len() - MAX_NIGHTS);
         }
-        self.save()?;
+        if let Err(e) = self.save() {
+            self.pending = Some(pending);
+            self.nights = previous_nights;
+            return Err(e);
+        }
         Ok(seconds)
     }
 
@@ -348,6 +384,17 @@ impl SleepTracker {
 
 fn now() -> i64 {
     Local::now().timestamp()
+}
+
+/// Clamps a queued event timestamp to a sane range. Widget commands can sit
+/// in the queue for days, and device clocks can move backwards.
+fn event_time(at: i64) -> i64 {
+    let now = now();
+    if at <= 0 {
+        now
+    } else {
+        at.clamp(now - 60 * 24 * 60 * 60, now)
+    }
 }
 
 fn local_datetime(naive: NaiveDateTime) -> Option<DateTime<Local>> {
@@ -580,5 +627,52 @@ mod tests {
         );
         assert!(tracker.has_pending());
         assert_eq!(tracker.pending_seconds(), expected);
+    }
+
+    #[test]
+    fn going_to_bed_twice_keeps_the_first_timestamp() {
+        let mut tracker = temp_tracker("idempotent");
+        tracker.go_to_bed_at(now() - 60).unwrap();
+        let first = tracker.bedtime.unwrap();
+
+        tracker.go_to_bed_at(now()).unwrap();
+        assert_eq!(tracker.bedtime, Some(first));
+    }
+
+    #[test]
+    fn queued_wake_uses_the_original_timestamp() {
+        let mut tracker = temp_tracker("wake-at");
+        let now = now();
+        tracker.go_to_bed_at(now - 3600).unwrap();
+
+        let seconds = tracker.wake_up_at(now).unwrap().unwrap();
+        assert!((3600..=3601).contains(&seconds));
+        assert_eq!(tracker.pending_seconds(), seconds);
+    }
+
+    #[test]
+    fn failed_save_restores_the_pending_night() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-sleep-save-failure-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let not_a_dir = dir.join("file");
+        fs::write(&not_a_dir, "not a directory").unwrap();
+        let mut tracker = SleepTracker::new(&not_a_dir);
+        tracker.pending = Some(PendingNight {
+            bedtime: 100,
+            wake_time: 200,
+            seconds: 100,
+        });
+
+        assert!(tracker.discard_pending().is_err());
+        assert!(tracker.has_pending());
+        assert_eq!(tracker.pending_seconds(), 100);
+
+        assert!(tracker.commit_pending(90).is_err());
+        assert!(tracker.has_pending());
+        assert!(tracker.nights.is_empty());
     }
 }
