@@ -46,11 +46,21 @@ impl WeekStart {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 struct AppearanceJson {
     selected_theme: String,
 }
 
+impl Default for AppearanceJson {
+    fn default() -> Self {
+        Self {
+            selected_theme: "Dark".to_string(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 struct NotificationsJson {
     enabled: bool,
     quiet_start: u16,
@@ -88,7 +98,7 @@ impl Default for WorkJson {
 #[derive(Serialize, Deserialize)]
 struct SettingsJson {
     // Keep reading the old misspelled key from existing config files.
-    #[serde(alias = "appearence")]
+    #[serde(default, alias = "appearence")]
     appearance: AppearanceJson,
     #[serde(default)]
     notifications: NotificationsJson,
@@ -299,6 +309,25 @@ mod tests {
         assert_eq!(reloaded.quiet_hours(), (21 * 60, 6 * 60));
         assert_eq!(reloaded.week_start(), WeekStart::Saturday);
         assert_eq!(reloaded.usual_work_minutes(), 8 * 60);
+    }
+
+    #[test]
+    fn partial_settings_use_defaults_for_missing_fields() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-settings-partial-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"notifications":{"enabled":false}}"#).unwrap();
+
+        let settings = Settings::parse(&path).unwrap();
+        assert_eq!(settings.selected_theme(), "Dark");
+        assert!(!settings.notifications_enabled());
+        assert_eq!(settings.quiet_hours(), (22 * 60, 7 * 60));
+        assert_eq!(settings.week_start(), WeekStart::Monday);
+        assert_eq!(settings.usual_work_minutes(), 7 * 60 + 30);
     }
 
     #[test]

@@ -30,11 +30,9 @@ where
     let user_data = UserData::parse(config_dir)?;
     let work = work::WorkTimer::load(config_dir)?;
     let sleep = sleep::SleepTracker::load(config_dir)?;
-    let sleep_value = if sleep.has_pending() {
-        None
-    } else {
-        sleep.last_night_value()
-    };
+    // Match the foreground: a pending night already counts with its button
+    // timestamps, so background checks should evaluate it too.
+    let sleep_value = sleep.last_night_value();
     let time = Local::now().time();
     let values = TimerValues {
         working: work.today_active(),
@@ -129,5 +127,46 @@ mod tests {
         })
         .unwrap();
         assert_eq!(notified.len(), 1);
+    }
+
+    #[test]
+    fn background_check_uses_a_pending_night() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-rule-check-pending-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"appearance":{"selected_theme":"Dark"},"notifications":{"enabled":true,"quiet_start":0,"quiet_end":0}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("user_data.json"),
+            r#"{"version":1,"rules":[{"id":"short-sleep","name":"Short sleep","message":"Sleep more","which-timer":"sleep","trigger-time":25200,"tolerance":0,"trigger-if":"less"}]}"#,
+        )
+        .unwrap();
+        let now = Local::now().timestamp();
+        fs::write(
+            dir.join("sleep.json"),
+            format!(
+                r#"{{"bedtime":null,"pending":{{"bedtime":{},"wake_time":{now},"seconds":3600}},"nights":[]}}"#,
+                now - 3600
+            ),
+        )
+        .unwrap();
+
+        let mut notified = Vec::new();
+        run(&dir, |title, body| {
+            notified.push((title.to_string(), body.to_string()));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            notified,
+            [("Short sleep".to_string(), "Sleep more".to_string())]
+        );
     }
 }
