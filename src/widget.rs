@@ -117,8 +117,9 @@ pub fn write_state(config_dir: &Path, data: &StateData) {
 
 /// Returns newly queued commands, ordered by id.
 ///
-/// The drained batch stays on disk until [`commit_commands`] is called, so a
-/// process death between draining and applying does not lose button presses.
+/// The drained batch stays on disk until every command has been applied and
+/// [`mark_command_applied`] persisted its id, so a process death in the middle
+/// of a batch does not lose button presses or apply the batch twice.
 pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
     let file_commands = read_command_file(config_dir);
     let mut commands: Vec<Command> = NATIVE_COMMANDS.lock().unwrap().drain(..).collect();
@@ -148,22 +149,27 @@ pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
         .collect()
 }
 
-/// Records that a drained batch has been applied and removes its drain file.
+/// Persists that one command has been applied.
 ///
-/// Persist the newest id first: if removing the file then fails, the next
-/// drain filters the already-applied commands out instead of replaying them.
-pub fn commit_commands(config_dir: &Path, newest_id: Option<u64>) {
+/// Persist before applying the next command: if the process dies in between,
+/// the next drain filters this command out instead of replaying the whole
+/// batch. Returns false when the high-water mark could not be saved, in which
+/// case the caller should leave the rest of the batch for the next run.
+pub fn mark_command_applied(config_dir: &Path, id: u64) -> bool {
     let mut last_id = LAST_COMMAND_ID.lock().unwrap();
-    if let Some(id) = newest_id
-        && id > *last_id
-    {
-        *last_id = id;
-        if let Err(e) = storage::write_json(&config_dir.join(LAST_ID_FILE), &LastCommandId { id }) {
-            tracing::error!("Failed to persist widget command id: {e}");
-            // Keep the drain file so the commands are retried on the next run.
-            return;
-        }
+    if id <= *last_id {
+        return true;
     }
+    if let Err(e) = storage::write_json(&config_dir.join(LAST_ID_FILE), &LastCommandId { id }) {
+        tracing::error!("Failed to persist widget command id: {e}");
+        return false;
+    }
+    *last_id = id;
+    true
+}
+
+/// Removes the drained batch after every command in it was applied.
+pub fn finish_commands(config_dir: &Path) {
     let _ = fs::remove_file(config_dir.join(DRAIN_FILE));
 }
 
@@ -179,9 +185,10 @@ fn read_command_file(config_dir: &Path) -> Vec<Command> {
     let path = config_dir.join(COMMAND_FILE);
     let drain_path = config_dir.join(DRAIN_FILE);
 
-    // A drain file is a batch that was not committed yet, either because the
-    // app died while applying it or because removing it failed. Keep it until
-    // commit_commands runs. New commands wait one tick while it is recovered.
+    // A drain file is a batch that was not fully applied yet, either because
+    // the app died while applying it or because removing it failed. Keep it
+    // until finish_commands runs. New commands wait one tick while it is
+    // recovered.
     if drain_path.exists() {
         return parse_command_file(&drain_path);
     }
@@ -379,7 +386,8 @@ mod tests {
 
         let drained = drain_commands(&dir);
         assert_eq!(drained.len(), 1);
-        commit_commands(&dir, drained.last().map(|command| command.id));
+        assert!(mark_command_applied(&dir, drained[0].id));
+        finish_commands(&dir);
         assert!(drain_commands(&dir).is_empty());
     }
 
@@ -404,7 +412,8 @@ mod tests {
         assert_eq!(drained[0].action, "work-start");
         assert_eq!(drained[0].at, 1_700_000_000);
         assert!(drained[0].id > 0);
-        commit_commands(&dir, drained.last().map(|command| command.id));
+        assert!(mark_command_applied(&dir, drained[0].id));
+        finish_commands(&dir);
     }
 
     #[test]
@@ -424,16 +433,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(drain_commands(&dir).len(), 1);
-        // No commit yet, as if the process died while applying the command.
+        // No mark yet, as if the process died while applying the command.
         let retried = drain_commands(&dir);
         assert_eq!(retried.len(), 1);
         assert_eq!(retried[0].id, 7);
     }
 
     #[test]
-    fn committed_commands_do_not_replay_from_a_leftover_drain_file() {
+    fn applied_commands_do_not_replay_from_a_leftover_drain_file() {
         let _guard = drain_guard();
-        let dir = temp_dir("committed");
+        let dir = temp_dir("applied");
         let command = Command {
             id: 11,
             action: "sleep-wake".into(),
@@ -449,10 +458,10 @@ mod tests {
 
         let drained = drain_commands(&dir);
         assert_eq!(drained.len(), 1);
-        commit_commands(&dir, drained.last().map(|item| item.id));
+        assert!(mark_command_applied(&dir, drained[0].id));
 
-        // Simulate a failed remove: the drain file is still there, but the id
-        // was persisted, so it must be filtered out.
+        // Simulate a crash before the drain file could be removed: the id was
+        // persisted, so the already-applied command must be filtered out.
         storage::write_json(
             &dir.join(DRAIN_FILE),
             &CommandFile {
@@ -461,8 +470,41 @@ mod tests {
         )
         .unwrap();
         assert!(drain_commands(&dir).is_empty());
-        commit_commands(&dir, None);
+        finish_commands(&dir);
         assert!(!dir.join(DRAIN_FILE).exists());
+    }
+
+    #[test]
+    fn a_partially_applied_batch_resumes_after_the_last_applied_id() {
+        let _guard = drain_guard();
+        let dir = temp_dir("partial");
+        storage::write_json(
+            &dir.join(COMMAND_FILE),
+            &CommandFile {
+                commands: vec![
+                    Command {
+                        id: 20,
+                        action: "work-start".into(),
+                        at: 0,
+                    },
+                    Command {
+                        id: 21,
+                        action: "work-stop".into(),
+                        at: 0,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+        let drained = drain_commands(&dir);
+        assert_eq!(drained.len(), 2);
+        assert!(mark_command_applied(&dir, drained[0].id));
+        // The process dies before the second command is applied. Only the
+        // remaining command is replayed.
+        let retried = drain_commands(&dir);
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].id, 21);
     }
 }
 

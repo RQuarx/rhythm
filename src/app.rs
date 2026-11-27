@@ -307,9 +307,7 @@ impl App {
     /// Applies commands queued by the homescreen widget.
     pub fn drain_widget_commands(&mut self) {
         let commands = widget::drain_commands(&self.widget_dir);
-        let mut newest = None;
         for command in commands {
-            newest = Some(command.id);
             let at = command.at;
             match command.action.as_str() {
                 "work-start" => self.start_work_at(at),
@@ -322,10 +320,14 @@ impl App {
                 "sleep-wake" => self.wake_up_sleep_at(at),
                 _ => {}
             }
+            // Keep the batch on disk and record each applied id as we go, so
+            // a crash cannot drop the remaining button presses or replay the
+            // ones already applied.
+            if !widget::mark_command_applied(&self.widget_dir, command.id) {
+                return;
+            }
         }
-        // Keep the batch on disk until every command has been applied so a
-        // crash cannot drop a button press.
-        widget::commit_commands(&self.widget_dir, newest);
+        widget::finish_commands(&self.widget_dir);
     }
 
     pub fn start_work(&mut self) {
