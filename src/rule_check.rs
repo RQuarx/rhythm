@@ -60,11 +60,11 @@ where
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_hibalance_rhythm_widget_RhythmNativeBridge_evaluateRules(
-    mut env: jni::JNIEnv,
-    _this: jni::objects::JObject,
-    config_dir: jni::objects::JString<'_>,
-    context: jni::objects::JObject<'_>,
+pub extern "C" fn Java_org_hibalance_rhythm_widget_RhythmNativeBridge_evaluateRules<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    config_dir: jni::objects::JString<'local>,
+    context: jni::objects::JObject<'local>,
 ) {
     let Ok(config_dir) = env.get_string(&config_dir) else {
         let _ = env.exception_clear();

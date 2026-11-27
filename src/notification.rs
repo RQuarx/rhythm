@@ -36,9 +36,9 @@ pub fn notify(title: &str, body: &str) -> Result<(), Box<dyn Error>> {
 /// Background jobs cannot request runtime permissions, so this path only posts
 /// when the permission was already granted by the foreground app.
 #[cfg(target_os = "android")]
-pub fn notify_with_context(
-    env: &mut jni::JNIEnv,
-    context: &jni::objects::JObject,
+pub fn notify_with_context<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    context: &jni::objects::JObject<'local>,
     title: &str,
     body: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -76,9 +76,9 @@ mod android {
         Ok(result?)
     }
 
-    pub fn notify_with_context(
-        env: &mut JNIEnv,
-        context: &JObject,
+    pub fn notify_with_context<'local>(
+        env: &mut JNIEnv<'local>,
+        context: &JObject<'local>,
         title: &str,
         body: &str,
     ) -> Result<(), Box<dyn Error>> {
@@ -89,9 +89,9 @@ mod android {
         Ok(result?)
     }
 
-    fn post(
-        env: &mut JNIEnv,
-        context: &JObject,
+    fn post<'local>(
+        env: &mut JNIEnv<'local>,
+        context: &JObject<'local>,
         title: &str,
         body: &str,
         request_permission: bool,
@@ -190,6 +190,22 @@ mod android {
             &[JValue::Int(icon)],
         )?;
 
+        // Best effort: a missing launch intent must not block the warning.
+        match content_intent(env, context, sdk) {
+            Ok(Some(intent)) => {
+                env.call_method(
+                    &builder,
+                    "setContentIntent",
+                    "(Landroid/app/PendingIntent;)Landroid/app/Notification$Builder;",
+                    &[(&intent).into()],
+                )?;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = env.exception_clear();
+            }
+        }
+
         let notification = env
             .call_method(&builder, "build", "()Landroid/app/Notification;", &[])?
             .l()?;
@@ -202,6 +218,56 @@ mod android {
         )?;
 
         Ok(())
+    }
+
+    /// Builds a pending intent that opens the app when the notification is
+    /// tapped. Returns `None` when the package has no launch intent.
+    fn content_intent<'local>(
+        env: &mut JNIEnv<'local>,
+        context: &JObject<'local>,
+        sdk: i32,
+    ) -> JniResult<Option<JObject<'local>>> {
+        let package = env
+            .call_method(context, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let manager = env
+            .call_method(
+                context,
+                "getPackageManager",
+                "()Landroid/content/pm/PackageManager;",
+                &[],
+            )?
+            .l()?;
+        let launch = env
+            .call_method(
+                &manager,
+                "getLaunchIntentForPackage",
+                "(Ljava/lang/String;)Landroid/content/Intent;",
+                &[(&package).into()],
+            )?
+            .l()?;
+        if launch.is_null() {
+            return Ok(None);
+        }
+
+        let mut flags: i32 = 0x0800_0000; // PendingIntent.FLAG_UPDATE_CURRENT
+        if sdk >= 23 {
+            flags |= 0x0400_0000; // PendingIntent.FLAG_IMMUTABLE
+        }
+        let intent = env
+            .call_static_method(
+                "android/app/PendingIntent",
+                "getActivity",
+                "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+                &[
+                    context.into(),
+                    JValue::Int(0),
+                    (&launch).into(),
+                    JValue::Int(flags),
+                ],
+            )?
+            .l()?;
+        Ok(Some(intent))
     }
 
     fn sdk_int(env: &mut JNIEnv) -> JniResult<i32> {
