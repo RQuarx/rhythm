@@ -883,8 +883,8 @@ impl App {
         };
 
         for rule in self.evaluator.evaluate(self.user_data.rules(), &values) {
-            let TriggeredRule { name, message } = rule;
-            if let Err(e) = crate::notification::notify(&name, &message) {
+            let TriggeredRule { key, name, message } = rule;
+            if let Err(e) = crate::notification::notify(&key, &name, &message) {
                 error!("Failed to show rule notification: {e}");
             }
             self.report(Severity::Warning, name, message, String::new());

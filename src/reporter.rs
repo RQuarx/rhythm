@@ -158,7 +158,7 @@ impl Reporter {
         drop(state);
 
         if let Some(body) = notification_body
-            && let Err(e) = notification::notify("Rhythm error", &body)
+            && let Err(e) = notification::notify("Rhythm error", "Rhythm error", &body)
         {
             error!("Failed to show fatal notification: {e}");
         }
@@ -236,7 +236,7 @@ pub fn report_fatal(title: &str, message: &str, details: &str) {
         error!("Report details: {details}");
     }
 
-    if let Err(e) = notification::notify(title, message) {
+    if let Err(e) = notification::notify(title, title, message) {
         error!("Failed to show fatal notification: {e}");
     }
 }

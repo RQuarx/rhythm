@@ -57,6 +57,8 @@ pub struct TimerValues {
 }
 
 pub struct TriggeredRule {
+    /// Stable rule identity used as the notification key.
+    pub key: String,
     pub name: String,
     pub message: String,
 }
@@ -170,6 +172,7 @@ impl RuleEvaluator {
             now_active.insert(key.clone());
             if !self.active.contains(&key) {
                 triggered.push(TriggeredRule {
+                    key,
                     name: rule.name.clone(),
                     message: rule.message.clone(),
                 });

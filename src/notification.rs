@@ -1,13 +1,14 @@
 use std::error::Error;
 
-/// Stable notification id derived from the rule title, so separate rules can
-/// be shown at the same time while repeated warnings for one rule replace the
-/// previous notification instead of piling up.
+/// Stable notification id derived from the rule identity, so separate rules
+/// can be shown at the same time while repeated warnings for one rule replace
+/// the previous notification instead of piling up. The identity is used
+/// instead of the title because two rules may legitimately share a title.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn notification_id(title: &str) -> i32 {
+fn notification_id(key: &str) -> i32 {
     // FNV-1a keeps the id stable across processes and Rust versions.
     let mut hash: u32 = 0x811c_9dc5;
-    for byte in title.as_bytes() {
+    for byte in key.as_bytes() {
         hash ^= u32::from(*byte);
         hash = hash.wrapping_mul(0x0100_0193);
     }
@@ -15,14 +16,15 @@ fn notification_id(title: &str) -> i32 {
 }
 
 /// Shows a notification with a title and body on the current platform.
-pub fn notify(title: &str, body: &str) -> Result<(), Box<dyn Error>> {
+pub fn notify(key: &str, title: &str, body: &str) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "android")]
     {
-        android::notify(title, body)
+        android::notify(key, title, body)
     }
 
     #[cfg(not(target_os = "android"))]
     {
+        let _ = key;
         notify_rust::Notification::new()
             .summary(title)
             .body(body)
@@ -39,10 +41,11 @@ pub fn notify(title: &str, body: &str) -> Result<(), Box<dyn Error>> {
 pub fn notify_with_context<'local>(
     env: &mut jni::JNIEnv<'local>,
     context: &jni::objects::JObject<'local>,
+    key: &str,
     title: &str,
     body: &str,
 ) -> Result<(), Box<dyn Error>> {
-    android::notify_with_context(env, context, title, body)
+    android::notify_with_context(env, context, key, title, body)
 }
 
 #[cfg(target_os = "android")]
@@ -62,13 +65,13 @@ mod android {
     const PERMISSION_GRANTED: i32 = 0;
     const PERMISSION_REQUEST_CODE: i32 = 1;
 
-    pub fn notify(title: &str, body: &str) -> Result<(), Box<dyn Error>> {
+    pub fn notify(key: &str, title: &str, body: &str) -> Result<(), Box<dyn Error>> {
         let ctx = ndk_context::android_context();
         let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }?;
         let mut env = vm.attach_current_thread()?;
         let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
-        let result = post(&mut env, &activity, title, body, true);
+        let result = post(&mut env, &activity, key, title, body, true);
         if result.is_err() {
             // A pending Java exception would make every later JNI call fail.
             let _ = env.exception_clear();
@@ -79,10 +82,11 @@ mod android {
     pub fn notify_with_context<'local>(
         env: &mut JNIEnv<'local>,
         context: &JObject<'local>,
+        key: &str,
         title: &str,
         body: &str,
     ) -> Result<(), Box<dyn Error>> {
-        let result = post(env, context, title, body, false);
+        let result = post(env, context, key, title, body, false);
         if result.is_err() {
             let _ = env.exception_clear();
         }
@@ -92,11 +96,12 @@ mod android {
     fn post<'local>(
         env: &mut JNIEnv<'local>,
         context: &JObject<'local>,
+        key: &str,
         title: &str,
         body: &str,
         request_permission: bool,
     ) -> JniResult<()> {
-        let id = super::notification_id(title);
+        let id = super::notification_id(key);
         let sdk = sdk_int(env)?;
         if request_permission {
             request_notification_permission(env, context, sdk);
@@ -335,15 +340,19 @@ mod tests {
 
     #[test]
     fn different_rules_get_different_notification_ids() {
-        assert_ne!(notification_id("Short sleep"), notification_id("Long work"));
+        assert_ne!(notification_id("rule-work"), notification_id("rule-sleep"));
     }
 
     #[test]
     fn notification_ids_are_stable() {
-        assert_eq!(
-            notification_id("Short sleep"),
-            notification_id("Short sleep")
-        );
+        assert_eq!(notification_id("rule-work"), notification_id("rule-work"));
         assert!(notification_id("") >= 0);
+    }
+
+    #[test]
+    fn rules_with_the_same_title_but_different_ids_do_not_collide() {
+        // The key is the rule id, not the display title, so two rules named
+        // "Overwork" still get separate notifications.
+        assert_ne!(notification_id("rule-a"), notification_id("rule-b"));
     }
 }

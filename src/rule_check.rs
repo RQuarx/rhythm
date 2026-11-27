@@ -19,7 +19,7 @@ use crate::{
 /// has its own Android `Context` instead of the foreground activity.
 pub fn run<F>(config_dir: &Path, mut notify: F) -> Result<(), Box<dyn Error>>
 where
-    F: FnMut(&str, &str) -> Result<(), Box<dyn Error>>,
+    F: FnMut(&str, &str, &str) -> Result<(), Box<dyn Error>>,
 {
     std::fs::create_dir_all(config_dir)?;
     let settings = settings::Settings::parse(&config_dir.join("settings.json"))?;
@@ -51,7 +51,7 @@ where
         if let Err(e) = history.record("warning", &rule.name, &rule.message) {
             tracing::error!("Failed to record background rule report: {e}");
         }
-        if let Err(e) = notify(&rule.name, &rule.message) {
+        if let Err(e) = notify(&rule.key, &rule.name, &rule.message) {
             tracing::error!("Failed to show background rule notification: {e}");
         }
     }
@@ -72,8 +72,8 @@ pub extern "C" fn Java_org_hibalance_rhythm_widget_RhythmNativeBridge_evaluateRu
     };
     let config_dir = std::path::PathBuf::from(String::from(config_dir));
 
-    let result = run(&config_dir, |title, body| {
-        crate::notification::notify_with_context(&mut env, &context, title, body)
+    let result = run(&config_dir, |key, title, body| {
+        crate::notification::notify_with_context(&mut env, &context, key, title, body)
     });
     if let Err(e) = result {
         tracing::error!("Background rule check failed: {e}");
@@ -109,20 +109,27 @@ mod tests {
         .unwrap();
 
         let mut notified = Vec::new();
-        run(&dir, |title, body| {
-            notified.push((title.to_string(), body.to_string()));
+        run(&dir, |key, title, body| {
+            notified.push((key.to_string(), title.to_string(), body.to_string()));
             Ok(())
         })
         .unwrap();
 
-        assert_eq!(notified, [("Idle".to_string(), "No work yet".to_string())]);
+        assert_eq!(
+            notified,
+            [(
+                "idle".to_string(),
+                "Idle".to_string(),
+                "No work yet".to_string()
+            )]
+        );
         let history = report_history::ReportHistory::load(&dir).unwrap();
         assert_eq!(history.reports().len(), 1);
 
         // The persisted crossing state prevents the same warning from firing
         // again on every background run.
-        run(&dir, |title, body| {
-            notified.push((title.to_string(), body.to_string()));
+        run(&dir, |key, title, body| {
+            notified.push((key.to_string(), title.to_string(), body.to_string()));
             Ok(())
         })
         .unwrap();
@@ -158,15 +165,19 @@ mod tests {
         .unwrap();
 
         let mut notified = Vec::new();
-        run(&dir, |title, body| {
-            notified.push((title.to_string(), body.to_string()));
+        run(&dir, |key, title, body| {
+            notified.push((key.to_string(), title.to_string(), body.to_string()));
             Ok(())
         })
         .unwrap();
 
         assert_eq!(
             notified,
-            [("Short sleep".to_string(), "Sleep more".to_string())]
+            [(
+                "short-sleep".to_string(),
+                "Short sleep".to_string(),
+                "Sleep more".to_string()
+            )]
         );
     }
 }
