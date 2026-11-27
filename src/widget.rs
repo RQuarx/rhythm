@@ -30,6 +30,8 @@ pub struct StateData {
     pub sleep_active: bool,
     pub sleep_seconds: u64,
     pub last_night_seconds: u64,
+    /// A night is waiting for correction, so starting another one is blocked.
+    pub sleep_pending: bool,
     pub work_target: u64,
     pub sleep_target: u64,
     pub theme: String,
@@ -47,6 +49,7 @@ impl Default for StateData {
             sleep_active: false,
             sleep_seconds: 0,
             last_night_seconds: 0,
+            sleep_pending: false,
             work_target: 0,
             sleep_target: 0,
             theme: "System".to_string(),

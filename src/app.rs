@@ -183,8 +183,6 @@ pub struct App {
     evaluator: RuleEvaluator,
     reports: Box<dyn ReportSink>,
     widget_dir: PathBuf,
-    need_bedtime: bool,
-    manual_wake_time: Option<i64>,
 }
 
 impl App {
@@ -271,8 +269,6 @@ impl App {
             evaluator: RuleEvaluator::load(&config_path),
             reports,
             widget_dir: config_path,
-            need_bedtime: false,
-            manual_wake_time: None,
         })
     }
 
@@ -420,7 +416,7 @@ impl App {
             );
             return false;
         }
-        if self.need_bedtime {
+        if self.sleep.has_manual_night() {
             self.report(
                 Severity::Warning,
                 "Bedtime pending".into(),
@@ -439,8 +435,8 @@ impl App {
         match self.sleep.wake_up() {
             Ok(Some(_)) => {}
             Ok(None) => {
-                self.need_bedtime = true;
-                self.manual_wake_time = Some(Local::now().timestamp());
+                let result = self.sleep.begin_manual_night(Local::now().timestamp());
+                self.report_result(result);
             }
             Err(e) => self.report_result(Err::<(), _>(e)),
         }
@@ -453,10 +449,10 @@ impl App {
         match self.sleep.wake_up_at(at) {
             Ok(Some(_)) => {}
             Ok(None) => {
-                self.need_bedtime = true;
                 // Preserve when the user actually pressed "Woke up" so the
                 // manual bedtime prompt does not include the response delay.
-                self.manual_wake_time = Some(event_time(at));
+                let result = self.sleep.begin_manual_night(event_time(at));
+                self.report_result(result);
             }
             Err(e) => self.report_result(Err::<(), _>(e)),
         }
@@ -505,19 +501,18 @@ impl App {
         }
 
         let wake_time = self
-            .manual_wake_time
+            .sleep
+            .manual_wake_time()
             .unwrap_or_else(|| Local::now().timestamp());
         if let Err(e) = self.sleep.record_manual_night(minutes, wake_time) {
             self.report_result(Err::<(), _>(e));
-            return;
         }
-        self.need_bedtime = false;
-        self.manual_wake_time = None;
     }
 
     pub fn cancel_bedtime(&mut self) {
-        self.need_bedtime = false;
-        self.manual_wake_time = None;
+        if let Err(e) = self.sleep.cancel_manual_night() {
+            self.report_result(Err::<(), _>(e));
+        }
     }
 
     /// Discards a pending night without recording it.
@@ -652,6 +647,7 @@ impl App {
                 sleep_active: self.sleep.is_sleeping(),
                 sleep_seconds: current_sleep,
                 last_night_seconds: self.sleep.last_night(),
+                sleep_pending: self.sleep.has_pending() || self.sleep.has_manual_night(),
                 work_target: max_work,
                 sleep_target: min_sleep,
                 theme: self.settings.selected_theme().to_string(),
@@ -673,7 +669,7 @@ impl App {
             work_running: self.work.is_active(),
             work_paused: self.work.is_paused(),
             sleeping: self.sleep.is_sleeping(),
-            need_bedtime: self.need_bedtime,
+            need_bedtime: self.sleep.has_manual_night(),
             pending_active: self.sleep.has_pending(),
             pending_seconds,
             pending_hours: hours_text(pending_seconds),
@@ -1252,8 +1248,6 @@ mod tests {
             evaluator: RuleEvaluator::new(),
             reports: Box::new(NoReports),
             widget_dir: dir.to_path_buf(),
-            need_bedtime: false,
-            manual_wake_time: None,
         }
     }
 

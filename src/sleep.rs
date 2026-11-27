@@ -65,6 +65,10 @@ pub struct SleepSegment {
 struct SleepJson {
     bedtime: Option<i64>,
     pending: Option<PendingNight>,
+    /// Set when the user pressed "Woke up" without a bedtime, until the
+    /// bedtime is entered or the prompt is cancelled.
+    #[serde(default)]
+    manual_wake_time: Option<i64>,
     #[serde(default)]
     nights: Vec<NightRecord>,
 }
@@ -74,6 +78,7 @@ pub struct SleepTracker {
     file: PathBuf,
     bedtime: Option<i64>,
     pending: Option<PendingNight>,
+    manual_wake_time: Option<i64>,
     nights: Vec<NightRecord>,
 }
 
@@ -83,6 +88,7 @@ impl SleepTracker {
             file: config_dir.join(FILE_NAME),
             bedtime: None,
             pending: None,
+            manual_wake_time: None,
             nights: Vec::new(),
         }
     }
@@ -114,12 +120,46 @@ impl SleepTracker {
             file,
             bedtime: data.bedtime,
             pending,
+            manual_wake_time: data.manual_wake_time,
             nights,
         })
     }
 
     pub fn is_sleeping(&self) -> bool {
         self.bedtime.is_some()
+    }
+
+    /// The wake-up instant waiting for a manually entered bedtime.
+    pub fn manual_wake_time(&self) -> Option<i64> {
+        self.manual_wake_time
+    }
+
+    /// Whether the user must enter a bedtime before starting another night.
+    pub fn has_manual_night(&self) -> bool {
+        self.manual_wake_time.is_some()
+    }
+
+    /// Remembers that the user woke up without a recorded bedtime. Persisted so
+    /// a process death does not silently drop the pending bedtime prompt.
+    pub fn begin_manual_night(&mut self, wake_time: i64) -> Result<(), Error> {
+        let previous = self.manual_wake_time.replace(event_time(wake_time));
+        if let Err(e) = self.save() {
+            self.manual_wake_time = previous;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Dismisses the manually entered bedtime prompt.
+    pub fn cancel_manual_night(&mut self) -> Result<(), Error> {
+        let Some(previous) = self.manual_wake_time.take() else {
+            return Ok(());
+        };
+        if let Err(e) = self.save() {
+            self.manual_wake_time = Some(previous);
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn pending_seconds(&self) -> u64 {
@@ -186,8 +226,10 @@ impl SleepTracker {
             wake_time,
             seconds,
         });
+        let previous_manual = self.manual_wake_time.take();
         if let Err(e) = self.save() {
             self.pending = previous;
+            self.manual_wake_time = previous_manual;
             return Err(e);
         }
         Ok(seconds)
@@ -399,6 +441,7 @@ impl SleepTracker {
         let data = SleepJson {
             bedtime: self.bedtime,
             pending: self.pending.clone(),
+            manual_wake_time: self.manual_wake_time,
             nights: self.nights.clone(),
         };
         Ok(storage::write_json(&self.file, &data)?)
@@ -741,6 +784,7 @@ mod tests {
             &SleepJson {
                 bedtime: None,
                 pending: None,
+                manual_wake_time: None,
                 nights: vec![night; MAX_NIGHTS + 5],
             },
         )
@@ -763,6 +807,46 @@ mod tests {
         tracker.nights = vec![night; 3];
 
         assert_eq!(tracker.total_between(today, today), u64::MAX);
+    }
+
+    #[test]
+    fn manual_bedtime_prompt_survives_a_reload() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-sleep-manual-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut tracker = SleepTracker::new(&dir);
+        let wake = now() - 60;
+        tracker.begin_manual_night(wake).unwrap();
+        assert_eq!(tracker.manual_wake_time(), Some(wake));
+
+        let mut loaded = SleepTracker::load(&dir).unwrap();
+        assert_eq!(loaded.manual_wake_time(), Some(wake));
+        assert!(loaded.has_manual_night());
+
+        loaded.record_manual_night(22 * 60, wake + 60).unwrap();
+        assert!(!loaded.has_manual_night());
+        assert!(loaded.has_pending());
+        let reloaded = SleepTracker::load(&dir).unwrap();
+        assert!(!reloaded.has_manual_night());
+        assert!(reloaded.has_pending());
+    }
+
+    #[test]
+    fn cancelling_the_manual_bedtime_prompt_is_persisted() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-sleep-cancel-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut tracker = SleepTracker::new(&dir);
+        tracker.begin_manual_night(now() - 60).unwrap();
+        tracker.cancel_manual_night().unwrap();
+        assert!(!tracker.has_manual_night());
+        assert!(!SleepTracker::load(&dir).unwrap().has_manual_night());
     }
 
     #[test]

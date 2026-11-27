@@ -157,7 +157,7 @@ class RhythmWidgetProvider : AppWidgetProvider() {
                 // workSeconds is today's total, not the current session, so
                 // it must not be reset when the timer stops.
             }
-            "sleep-start" -> if (!state.sleepActive) {
+            "sleep-start" -> if (!state.sleepActive && !state.sleepPending) {
                 // Work and sleep never overlap; going to bed stops work at
                 // the same instant.
                 state.workActive = false
@@ -272,7 +272,13 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         setChronometer(views, R.id.work_time, workSeconds, state.workActive && !state.workPaused)
         views.setTextViewText(
             R.id.sleep_status,
-            if (state.sleepActive) "Sleeping" else "Awake",
+            when {
+                state.sleepActive -> "Sleeping"
+                // A correction or manual bedtime is waiting in the app, so a
+                // new night cannot start until it is resolved.
+                state.sleepPending -> "Check sleep"
+                else -> "Awake"
+            },
         )
         setChronometer(views, R.id.sleep_time, sleepSeconds, state.sleepActive)
 
@@ -289,8 +295,14 @@ class RhythmWidgetProvider : AppWidgetProvider() {
             if (state.workActive && state.workPaused) View.VISIBLE else View.GONE,
         )
         views.setViewVisibility(R.id.work_stop, if (state.workActive) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.sleep_start, if (state.sleepActive) View.GONE else View.VISIBLE)
-        views.setViewVisibility(R.id.sleep_wake, if (state.sleepActive) View.VISIBLE else View.GONE)
+        views.setViewVisibility(
+            R.id.sleep_start,
+            if (!state.sleepActive && !state.sleepPending) View.VISIBLE else View.GONE,
+        )
+        views.setViewVisibility(
+            R.id.sleep_wake,
+            if (state.sleepActive && !state.sleepPending) View.VISIBLE else View.GONE,
+        )
 
         views.setOnClickPendingIntent(R.id.work_start, commandIntent(context, "work-start", 1))
         views.setOnClickPendingIntent(R.id.work_pause, commandIntent(context, "work-pause", 2))

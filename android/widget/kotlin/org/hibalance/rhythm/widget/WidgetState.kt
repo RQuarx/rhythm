@@ -14,6 +14,7 @@ data class WidgetState(
     var sleepActive: Boolean = false,
     var sleepSeconds: Long = 0,
     var lastNightSeconds: Long = 0,
+    var sleepPending: Boolean = false,
     var workTarget: Long = 0,
     var sleepTarget: Long = 0,
     var theme: String = "System",
@@ -105,6 +106,7 @@ object WidgetStore {
                 sleepActive = json.optBoolean("sleep_active", false),
                 sleepSeconds = json.optLong("sleep_seconds", 0),
                 lastNightSeconds = json.optLong("last_night_seconds", 0),
+                sleepPending = json.optBoolean("sleep_pending", false),
                 workTarget = json.optLong("work_target", 0),
                 sleepTarget = json.optLong("sleep_target", 0),
                 theme = json.optString("theme", "System"),
@@ -127,6 +129,7 @@ object WidgetStore {
             .put("sleep_active", state.sleepActive)
             .put("sleep_seconds", state.sleepSeconds)
             .put("last_night_seconds", state.lastNightSeconds)
+            .put("sleep_pending", state.sleepPending)
             .put("work_target", state.workTarget)
             .put("sleep_target", state.sleepTarget)
             .put("theme", state.theme)
