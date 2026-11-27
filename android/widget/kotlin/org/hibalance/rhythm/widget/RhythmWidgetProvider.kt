@@ -14,6 +14,9 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import org.HiBalance.rhythm.R
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -109,39 +112,69 @@ class RhythmWidgetProvider : AppWidgetProvider() {
     }
 
     private fun applyOptimistic(state: WidgetState, action: String) {
+        // The state file is only rewritten while the app runs. Add the time
+        // that passed since the last write so a button press after a long gap
+        // does not roll the displayed duration back.
+        val elapsed = elapsedSinceUpdate(state)
+        if (state.workActive) {
+            if (state.workPaused) {
+                state.pausedSeconds += elapsed
+            } else {
+                state.workSeconds += elapsed
+            }
+        }
+        if (state.sleepActive) {
+            state.sleepSeconds += elapsed
+        }
+
         when (action) {
-            "work-start" -> {
+            "work-start" -> if (!state.workActive) {
                 state.workActive = true
                 state.workPaused = false
                 state.pausedSeconds = 0
             }
-            "work-pause" -> {
+            "work-pause" -> if (state.workActive && !state.workPaused) {
                 state.workPaused = true
                 state.pausedSeconds = 0
             }
-            "work-resume" -> {
+            "work-resume" -> if (state.workActive && state.workPaused) {
                 state.workPaused = false
                 state.pausedSeconds = 0
             }
-            "work-stop" -> {
+            "work-stop" -> if (state.workActive) {
                 state.workActive = false
                 state.workPaused = false
                 state.pausedSeconds = 0
                 // workSeconds is today's total, not the current session, so
                 // it must not be reset when the timer stops.
             }
-            "sleep-start" -> {
+            "sleep-start" -> if (!state.sleepActive) {
                 state.sleepActive = true
                 state.sleepSeconds = 0
             }
-            "sleep-wake" -> {
+            "sleep-wake" -> if (state.sleepActive) {
                 state.sleepActive = false
                 // While sleeping, sleepSeconds tracks the current night. Once
                 // awake, the widget displays lastNightSeconds.
                 state.lastNightSeconds = state.sleepSeconds
             }
         }
+        state.updatedAt = nowText()
     }
+
+    private fun elapsedSinceUpdate(state: WidgetState): Long {
+        if (state.updatedAt.isEmpty()) return 0
+        return try {
+            val parsed = SimpleDateFormat(STATE_TIME_FORMAT, Locale.US).parse(state.updatedAt)
+                ?: return 0
+            ((System.currentTimeMillis() - parsed.time) / 1000).coerceAtLeast(0)
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun nowText(): String =
+        SimpleDateFormat(STATE_TIME_FORMAT, Locale.US).format(Date())
 
     private fun buildViews(context: Context, state: WidgetState, wide: Boolean): RemoteViews {
         val views = RemoteViews(
@@ -258,6 +291,7 @@ class RhythmWidgetProvider : AppWidgetProvider() {
 
     companion object {
         private const val TAG = "RhythmWidget"
+        private const val STATE_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss"
         const val COMMAND_ACTION: String = "org.HiBalance.rhythm.WIDGET_COMMAND"
         const val EXTRA_COMMAND: String = "command"
 
