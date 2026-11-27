@@ -128,7 +128,7 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         }
 
         when (action) {
-            "work-start" -> if (!state.workActive) {
+            "work-start" -> if (!state.sleepActive && !state.workActive) {
                 state.workActive = true
                 state.workPaused = false
                 state.pausedSeconds = 0
@@ -137,7 +137,7 @@ class RhythmWidgetProvider : AppWidgetProvider() {
                 state.workPaused = true
                 state.pausedSeconds = 0
             }
-            "work-resume" -> if (state.workActive && state.workPaused) {
+            "work-resume" -> if (!state.sleepActive && state.workActive && state.workPaused) {
                 state.workPaused = false
                 state.pausedSeconds = 0
             }
@@ -149,6 +149,11 @@ class RhythmWidgetProvider : AppWidgetProvider() {
                 // it must not be reset when the timer stops.
             }
             "sleep-start" -> if (!state.sleepActive) {
+                // Work and sleep never overlap; going to bed stops work at
+                // the same instant.
+                state.workActive = false
+                state.workPaused = false
+                state.pausedSeconds = 0
                 state.sleepActive = true
                 state.sleepSeconds = 0
             }

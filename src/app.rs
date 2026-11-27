@@ -312,7 +312,9 @@ impl App {
                 "work-start" => self.start_work_at(at),
                 "work-pause" => self.pause_work_at(at),
                 "work-resume" => self.unpause_work_at(at),
-                "work-stop" => self.stop_work_at(at),
+                "work-stop" => {
+                    self.stop_work_at(at);
+                }
                 "sleep-start" => self.start_sleep_at(at),
                 "sleep-wake" => self.wake_up_sleep_at(at),
                 _ => {}
@@ -321,11 +323,13 @@ impl App {
     }
 
     pub fn start_work(&mut self) {
-        let result = self.work.start();
-        self.report_result(result);
+        self.start_work_at(Local::now().timestamp());
     }
 
     fn start_work_at(&mut self, at: i64) {
+        if !self.can_start_work() {
+            return;
+        }
         let result = self.work.start_at(at);
         self.report_result(result);
     }
@@ -341,35 +345,57 @@ impl App {
     }
 
     pub fn unpause_work(&mut self) {
-        let result = self.work.unpause();
-        self.report_result(result);
+        self.unpause_work_at(Local::now().timestamp());
     }
 
     fn unpause_work_at(&mut self, at: i64) {
+        if !self.can_start_work() {
+            return;
+        }
         let result = self.work.unpause_at(at);
         self.report_result(result);
     }
 
     pub fn stop_work(&mut self) {
-        let result = self.work.stop();
-        self.report_result(result);
+        self.stop_work_at(Local::now().timestamp());
     }
 
-    fn stop_work_at(&mut self, at: i64) {
-        let result = self.work.stop_at(at);
-        self.report_result(result);
+    fn stop_work_at(&mut self, at: i64) -> bool {
+        match self.work.stop_at(at) {
+            Ok(()) => true,
+            Err(e) => {
+                self.report_result(Err::<(), _>(e));
+                false
+            }
+        }
+    }
+
+    /// Work and sleep are mutually exclusive. Blocking the start here keeps a
+    /// sleeping night from silently accumulating work time.
+    fn can_start_work(&mut self) -> bool {
+        if self.sleep.is_sleeping() {
+            self.report(
+                Severity::Warning,
+                "Still sleeping".into(),
+                "Wake up before starting work.".into(),
+                String::new(),
+            );
+            return false;
+        }
+        true
     }
 
     pub fn start_sleep(&mut self) {
-        if !self.can_start_sleep() {
-            return;
-        }
-        let result = self.sleep.go_to_bed();
-        self.report_result(result);
+        self.start_sleep_at(Local::now().timestamp());
     }
 
     fn start_sleep_at(&mut self, at: i64) {
         if !self.can_start_sleep() {
+            return;
+        }
+        // Going to bed ends the work interval at the same instant, so the two
+        // timers never overlap.
+        if self.work.is_active() && !self.stop_work_at(at) {
             return;
         }
         let result = self.sleep.go_to_bed_at(at);

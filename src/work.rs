@@ -209,10 +209,6 @@ impl WorkTimer {
         }
     }
 
-    pub fn start(&mut self) -> Result<(), Error> {
-        self.start_at(now())
-    }
-
     /// Starts the timer at a timestamp captured by the caller. Used for
     /// widget commands that may be applied long after the button press.
     pub fn start_at(&mut self, at: i64) -> Result<(), Error> {
@@ -254,10 +250,6 @@ impl WorkTimer {
         Ok(())
     }
 
-    pub fn unpause(&mut self) -> Result<(), Error> {
-        self.unpause_at(now())
-    }
-
     pub fn unpause_at(&mut self, at: i64) -> Result<(), Error> {
         let WorkState::Paused { since } = self.state else {
             return Ok(());
@@ -276,10 +268,6 @@ impl WorkTimer {
             return Err(e);
         }
         Ok(())
-    }
-
-    pub fn stop(&mut self) -> Result<(), Error> {
-        self.stop_at(now())
     }
 
     pub fn stop_at(&mut self, at: i64) -> Result<(), Error> {
@@ -524,16 +512,19 @@ mod tests {
 
     #[test]
     fn pauses_are_recorded_as_their_own_intervals() {
-        let mut timer = timer();
+        let dir = temp_dir("pause-intervals");
+        let mut timer = WorkTimer::new(&dir);
+        let start = now() - 200;
+        let pause = now() - 100;
         timer.intervals.push(WorkInterval {
-            start: 100,
-            end: 200,
+            start,
+            end: pause,
             active: true,
         });
-        timer.state = WorkState::Paused { since: 200 };
+        timer.state = WorkState::Paused { since: pause };
 
         assert_eq!(timer.elapsed(), 100);
-        timer.unpause().unwrap();
+        timer.unpause_at(now()).unwrap();
         assert_eq!(timer.intervals.len(), 2);
         assert!(!timer.intervals[1].active);
         assert_eq!(timer.elapsed(), 100);

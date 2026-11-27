@@ -127,12 +127,8 @@ impl SleepTracker {
     /// Seconds since the recorded bedtime, without triggering any rules.
     pub fn current_elapsed(&self) -> u64 {
         self.bedtime
-            .map(|bedtime| now().saturating_sub(bedtime) as u64)
+            .map(|bedtime| now().saturating_sub(bedtime).max(0) as u64)
             .unwrap_or(0)
-    }
-
-    pub fn go_to_bed(&mut self) -> Result<(), Error> {
-        self.go_to_bed_at(now())
     }
 
     /// Records bedtime at a timestamp captured by the caller. A second
