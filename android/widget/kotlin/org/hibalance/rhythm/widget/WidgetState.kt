@@ -2,7 +2,6 @@ package org.hibalance.rhythm.widget
 
 import android.content.Context
 import java.io.File
-import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -25,10 +24,33 @@ object WidgetStore {
     private const val DIR = "rhythm"
 
     // Monotonic within the process and independent of wall-clock changes.
-    private val commandCounter = AtomicLong(System.currentTimeMillis() * 1000)
+    // Seeded on the first command from both the wall clock and the last id the
+    // Rust side persisted, so a backwards clock change cannot make new ids
+    // look like already-applied commands.
+    private var commandCounter = 0L
 
     private fun stateFile(context: Context) = File(context.filesDir, "$DIR/widget_state.json")
     private fun commandsFile(context: Context) = File(context.filesDir, "$DIR/widget_commands.json")
+
+    private fun lastCommandFile(context: Context) =
+        File(context.filesDir, "$DIR/widget_last_command.json")
+
+    private fun readLastCommandId(context: Context): Long {
+        return try {
+            val file = lastCommandFile(context)
+            if (!file.exists()) 0L else JSONObject(file.readText()).optLong("id", 0L)
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun nextCommandId(context: Context): Long {
+        val wallClock = System.currentTimeMillis() * 1000
+        val persisted = readLastCommandId(context)
+        val persistedNext = if (persisted == Long.MAX_VALUE) persisted else persisted + 1
+        commandCounter = maxOf(commandCounter + 1, wallClock, persistedNext)
+        return commandCounter
+    }
 
     private fun ensureDir(context: Context) {
         File(context.filesDir, DIR).mkdirs()
@@ -122,7 +144,7 @@ object WidgetStore {
         val file = commandsFile(context)
         val commands = readCommands(file)
 
-        val id = commandCounter.incrementAndGet()
+        val id = nextCommandId(context)
         commands.put(JSONObject().put("id", id).put("action", action).put("at", at))
         writeAtomic(file, JSONObject().put("commands", commands).toString())
         return id
