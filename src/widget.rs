@@ -72,11 +72,15 @@ struct CommandFile {
 }
 
 fn signature(data: &StateData) -> String {
-    serde_json::to_string(&StateData {
-        updated_at: String::new(),
-        ..data.clone()
-    })
-    .unwrap_or_default()
+    let mut data = data.clone();
+    data.updated_at = String::new();
+    // Durations are written with second precision, but only a change in the
+    // displayed minute (or in another field) should trigger a new write and a
+    // widget refresh. The Chronometer ticks between writes on its own.
+    data.work_seconds = data.work_seconds / 60 * 60;
+    data.paused_seconds = data.paused_seconds / 60 * 60;
+    data.sleep_seconds = data.sleep_seconds / 60 * 60;
+    serde_json::to_string(&data).unwrap_or_default()
 }
 
 /// Writes the authoritative state for the widget.
@@ -259,6 +263,29 @@ mod tests {
         let current: StateData =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).unwrap()).unwrap();
         assert!(!current.work_active);
+    }
+
+    #[test]
+    fn sub_minute_duration_changes_do_not_rewrite_state() {
+        let dir = temp_dir("signature");
+        let state = StateData {
+            work_active: true,
+            work_seconds: 3_600,
+            ..StateData::default()
+        };
+        write_state(&dir, &state);
+        let first = fs::read_to_string(dir.join(STATE_FILE)).unwrap();
+
+        let mut later = state.clone();
+        later.work_seconds = 3_659;
+        write_state(&dir, &later);
+        assert_eq!(fs::read_to_string(dir.join(STATE_FILE)).unwrap(), first);
+
+        later.work_seconds = 3_660;
+        write_state(&dir, &later);
+        let updated: StateData =
+            serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(updated.work_seconds, 3_660);
     }
 
     #[test]

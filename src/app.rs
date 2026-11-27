@@ -613,12 +613,12 @@ impl App {
             &widget::StateData {
                 work_active: self.work.is_active(),
                 work_paused: self.work.is_paused(),
-                work_seconds: widget_seconds(work_today),
+                work_seconds: work_today,
                 // The widget shows this next to "Paused", so it must be the
                 // current pause, not the total paused time for the day.
-                paused_seconds: widget_seconds(self.work.current_pause_elapsed()),
+                paused_seconds: self.work.current_pause_elapsed(),
                 sleep_active: self.sleep.is_sleeping(),
-                sleep_seconds: widget_seconds(current_sleep),
+                sleep_seconds: current_sleep,
                 last_night_seconds: self.sleep.last_night(),
                 work_target: max_work,
                 sleep_target: min_sleep,
@@ -948,10 +948,6 @@ fn timeline_detail(kind: TimelineKind, from_secs: u32, to_secs: u32) -> String {
 
 /// The widget only displays minutes, so round second-based values to avoid
 /// rewriting its state file and calling JNI on every tick.
-fn widget_seconds(seconds: u64) -> u64 {
-    seconds / 60 * 60
-}
-
 fn percentage(value: u64, target: u64) -> i32 {
     if target == 0 {
         return 0;
