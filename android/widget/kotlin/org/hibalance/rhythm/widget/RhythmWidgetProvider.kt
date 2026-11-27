@@ -9,10 +9,13 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
+import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
 import org.HiBalance.rhythm.R
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 class RhythmWidgetProvider : AppWidgetProvider() {
     private data class WidgetPalette(
@@ -65,16 +68,27 @@ class RhythmWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == COMMAND_ACTION) {
             val action = intent.getStringExtra(EXTRA_COMMAND) ?: return
-            val state = WidgetStore.readState(context)
-            applyOptimistic(state, action)
-            WidgetStore.writeState(context, state)
-
-            val id = WidgetStore.appendCommand(context, action)
-            val command = JSONObject().put("id", id).put("action", action).toString()
+            val at = System.currentTimeMillis() / 1000
             try {
-                RhythmNativeBridge.applyCommand(command)
-            } catch (_: UnsatisfiedLinkError) {
-                // The app process is not alive; the command file is picked up on launch.
+                // Queue first so a state-file failure cannot lose the action.
+                val id = WidgetStore.appendCommand(context, action, at)
+                val state = WidgetStore.readState(context)
+                applyOptimistic(state, action)
+                WidgetStore.writeState(context, state)
+
+                val command = JSONObject()
+                    .put("id", id)
+                    .put("action", action)
+                    .put("at", at)
+                    .toString()
+                try {
+                    RhythmNativeBridge.applyCommand(command)
+                } catch (_: UnsatisfiedLinkError) {
+                    // The app process is not alive; the command file is picked
+                    // up on launch and replayed with the original timestamp.
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to queue widget command $action", e)
             }
             updateAll(context)
             return
@@ -82,21 +96,49 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         super.onReceive(context, intent)
     }
 
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: Bundle,
+    ) {
+        val state = WidgetStore.readState(context)
+        val width = newOptions.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 110)
+        appWidgetManager.updateAppWidget(appWidgetId, buildViews(context, state, width >= 250))
+    }
+
     private fun applyOptimistic(state: WidgetState, action: String) {
         when (action) {
             "work-start" -> {
                 state.workActive = true
                 state.workPaused = false
+                state.pausedSeconds = 0
             }
-            "work-pause" -> state.workPaused = true
-            "work-resume" -> state.workPaused = false
+            "work-pause" -> {
+                state.workPaused = true
+                state.pausedSeconds = 0
+            }
+            "work-resume" -> {
+                state.workPaused = false
+                state.pausedSeconds = 0
+            }
             "work-stop" -> {
                 state.workActive = false
                 state.workPaused = false
-                state.workSeconds = 0
+                state.pausedSeconds = 0
+                // workSeconds is today's total, not the current session, so
+                // it must not be reset when the timer stops.
             }
-            "sleep-start" -> state.sleepActive = true
-            "sleep-wake" -> state.sleepActive = false
+            "sleep-start" -> {
+                state.sleepActive = true
+                state.sleepSeconds = 0
+            }
+            "sleep-wake" -> {
+                state.sleepActive = false
+                // While sleeping, sleepSeconds tracks the current night. Once
+                // awake, the widget displays lastNightSeconds.
+                state.lastNightSeconds = state.sleepSeconds
+            }
         }
     }
 
@@ -183,7 +225,12 @@ class RhythmWidgetProvider : AppWidgetProvider() {
             ?: Intent.makeRestartActivityTask(
                 ComponentName(context.packageName, "android.app.NativeActivity"),
             )
-        return PendingIntent.getActivity(context, 100, launch, immutableFlag())
+        return PendingIntent.getActivity(
+            context,
+            100,
+            launch,
+            PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag(),
+        )
     }
 
     private fun immutableFlag(): Int =
@@ -197,10 +244,11 @@ class RhythmWidgetProvider : AppWidgetProvider() {
 
     private fun percent(value: Long, target: Long): Int {
         if (target <= 0) return 0
-        return ((value.coerceAtMost(target).toDouble() / target) * 100).toInt()
+        return ((value.coerceAtMost(target).toDouble() / target) * 100).roundToInt()
     }
 
     companion object {
+        private const val TAG = "RhythmWidget"
         const val COMMAND_ACTION: String = "org.HiBalance.rhythm.WIDGET_COMMAND"
         const val EXTRA_COMMAND: String = "command"
 

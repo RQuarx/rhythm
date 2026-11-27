@@ -48,7 +48,15 @@ object WidgetStore {
 
     private fun readCommands(file: File): JSONArray {
         if (!file.exists()) return JSONArray()
-        val text = file.readText()
+        // Rust drains this file by renaming it, so it can disappear between
+        // exists() and readText(). Treat that as an empty queue; the drained
+        // commands are already in the drain file and the new command will be
+        // written to a fresh queue.
+        val text = try {
+            file.readText()
+        } catch (_: Exception) {
+            return JSONArray()
+        }
         return try {
             JSONArray(text)
         } catch (_: Exception) {
@@ -105,13 +113,17 @@ object WidgetStore {
     }
 
     @Synchronized
-    fun appendCommand(context: Context, action: String): Long {
+    fun appendCommand(
+        context: Context,
+        action: String,
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Long {
         ensureDir(context)
         val file = commandsFile(context)
         val commands = readCommands(file)
 
         val id = commandCounter.incrementAndGet()
-        commands.put(JSONObject().put("id", id).put("action", action))
+        commands.put(JSONObject().put("id", id).put("action", action).put("at", at))
         writeAtomic(file, JSONObject().put("commands", commands).toString())
         return id
     }
