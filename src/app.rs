@@ -540,11 +540,9 @@ impl App {
                 }
                 Ok(())
             }
-            Err(e) => {
-                let message = e.to_string();
-                self.report_result(Err::<(), _>(e));
-                Err(message)
-            }
+            // The caller shows the failure; reporting it here too would show
+            // the same error twice.
+            Err(e) => Err(e.to_string()),
         }
     }
 

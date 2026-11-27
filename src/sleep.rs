@@ -14,6 +14,10 @@ use crate::storage;
 
 const FILE_NAME: &str = "sleep.json";
 const MAX_NIGHTS: usize = 60;
+/// Corrections are free-form, so reject values that would make the weekly
+/// totals meaningless or overflow. This is deliberately far above a real
+/// night's length.
+const MAX_NIGHT_SECONDS: u64 = 60 * 24 * 60 * 60;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -25,6 +29,9 @@ pub enum Error {
 
     #[error("Unable to resolve the entered bedtime in the local timezone")]
     InvalidTime,
+
+    #[error("Sleep duration is too long to record")]
+    DurationTooLong,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -88,11 +95,26 @@ impl SleepTracker {
             Err(e) => return Err(e.into()),
         };
 
+        // A hand-edited or older file may hold durations that no real night
+        // could have. Clamp them so weekly sums stay meaningful and cannot
+        // overflow.
+        let mut nights = data.nights;
+        for night in &mut nights {
+            night.seconds = night.seconds.min(MAX_NIGHT_SECONDS);
+        }
+        if nights.len() > MAX_NIGHTS {
+            nights.drain(..nights.len() - MAX_NIGHTS);
+        }
+        let mut pending = data.pending;
+        if let Some(night) = &mut pending {
+            night.seconds = night.seconds.min(MAX_NIGHT_SECONDS);
+        }
+
         Ok(Self {
             file,
             bedtime: data.bedtime,
-            pending: data.pending,
-            nights: data.nights,
+            pending,
+            nights,
         })
     }
 
@@ -199,6 +221,9 @@ impl SleepTracker {
 
     /// Stores the user-approved duration and returns it for rule evaluation.
     pub fn commit_pending(&mut self, seconds: u64) -> Result<u64, Error> {
+        if seconds > MAX_NIGHT_SECONDS {
+            return Err(Error::DurationTooLong);
+        }
         let Some(pending) = self.pending.take() else {
             return Ok(0);
         };
@@ -252,20 +277,23 @@ impl SleepTracker {
         for night in &self.nights {
             let date = local_date(night.wake_time);
             if date >= first && date <= last {
-                *totals.entry(date).or_insert(0) += night.seconds;
+                let total = totals.entry(date).or_insert(0);
+                *total = total.saturating_add(night.seconds);
             }
         }
         if let Some(pending) = &self.pending {
             let date = local_date(pending.wake_time);
             if date >= first && date <= last {
-                *totals.entry(date).or_insert(0) += pending.seconds;
+                let total = totals.entry(date).or_insert(0);
+                *total = total.saturating_add(pending.seconds);
             }
         }
         let mut date = first;
         loop {
             let active = self.current_sleep_overlap(date);
             if active > 0 {
-                *totals.entry(date).or_insert(0) += active;
+                let total = totals.entry(date).or_insert(0);
+                *total = total.saturating_add(active);
             }
             if date >= last {
                 break;
@@ -295,8 +323,7 @@ impl SleepTracker {
     pub fn total_between(&self, first: chrono::NaiveDate, last: chrono::NaiveDate) -> u64 {
         self.series_between(first, last)
             .iter()
-            .map(|(_, seconds)| *seconds)
-            .sum()
+            .fold(0u64, |total, (_, seconds)| total.saturating_add(*seconds))
     }
 
     /// Sleep intervals clipped to an inclusive local-date window.
@@ -676,6 +703,66 @@ mod tests {
         let seconds = tracker.wake_up_at(now).unwrap().unwrap();
         assert!((3600..=3601).contains(&seconds));
         assert_eq!(tracker.pending_seconds(), seconds);
+    }
+
+    #[test]
+    fn absurd_correction_is_rejected_and_pending_survives() {
+        let mut tracker = temp_tracker("absurd-correction");
+        tracker.pending = Some(PendingNight {
+            bedtime: 100,
+            wake_time: 200,
+            seconds: 100,
+        });
+
+        assert!(matches!(
+            tracker.commit_pending(MAX_NIGHT_SECONDS + 1),
+            Err(Error::DurationTooLong)
+        ));
+        assert!(tracker.has_pending());
+        assert_eq!(tracker.pending_seconds(), 100);
+        assert!(tracker.nights.is_empty());
+    }
+
+    #[test]
+    fn loading_clamps_unrealistic_nights() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rhythm-sleep-clamp-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        let night = NightRecord {
+            bedtime: 100,
+            wake_time: 200,
+            seconds: u64::MAX,
+        };
+        storage::write_json(
+            &dir.join(FILE_NAME),
+            &SleepJson {
+                bedtime: None,
+                pending: None,
+                nights: vec![night; MAX_NIGHTS + 5],
+            },
+        )
+        .unwrap();
+
+        let tracker = SleepTracker::load(&dir).unwrap();
+        assert_eq!(tracker.nights.len(), MAX_NIGHTS);
+        assert!(tracker.nights.iter().all(|n| n.seconds == MAX_NIGHT_SECONDS));
+    }
+
+    #[test]
+    fn huge_nights_saturate_instead_of_overflowing() {
+        let mut tracker = tracker();
+        let today = Local::now().date_naive();
+        let night = NightRecord {
+            bedtime: epoch(today - ChronoDuration::days(1), 23, 0),
+            wake_time: epoch(today, 7, 0),
+            seconds: u64::MAX,
+        };
+        tracker.nights = vec![night; 3];
+
+        assert_eq!(tracker.total_between(today, today), u64::MAX);
     }
 
     #[test]
