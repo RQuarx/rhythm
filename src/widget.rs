@@ -13,6 +13,7 @@ use crate::storage;
 const STATE_FILE: &str = "widget_state.json";
 const COMMAND_FILE: &str = "widget_commands.json";
 const DRAIN_FILE: &str = "widget_commands.drain.json";
+const LAST_ID_FILE: &str = "widget_last_command.json";
 const STATE_VERSION: u32 = 1;
 
 static NATIVE_COMMANDS: Mutex<VecDeque<Command>> = Mutex::new(VecDeque::new());
@@ -71,6 +72,11 @@ struct CommandFile {
     commands: Vec<Command>,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+struct LastCommandId {
+    id: u64,
+}
+
 fn signature(data: &StateData) -> String {
     let mut data = data.clone();
     data.updated_at = String::new();
@@ -109,13 +115,17 @@ pub fn write_state(config_dir: &Path, data: &StateData) {
     notify_widget();
 }
 
-/// Returns newly queued commands, ordered by id. Clears the command file.
+/// Returns newly queued commands, ordered by id.
+///
+/// The drained batch stays on disk until [`commit_commands`] is called, so a
+/// process death between draining and applying does not lose button presses.
 pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
     let file_commands = read_command_file(config_dir);
     let mut commands: Vec<Command> = NATIVE_COMMANDS.lock().unwrap().drain(..).collect();
     commands.extend(file_commands);
 
     let mut last_id = LAST_COMMAND_ID.lock().unwrap();
+    *last_id = (*last_id).max(read_last_id(config_dir));
 
     // Older callers may send a command without an id. Assign one before the
     // id filter below; otherwise the synthesized id would look like an
@@ -130,37 +140,59 @@ pub fn drain_commands(config_dir: &Path) -> Vec<Command> {
     commands.sort_by_key(|command| command.id);
 
     let mut seen = HashSet::new();
-    let fresh: Vec<Command> = commands
+    commands
         .into_iter()
         // The widget writes a command to the file AND sends it through JNI,
         // so the same id can arrive twice in one drain.
         .filter(|command| command.id > *last_id && seen.insert(command.id))
-        .collect();
-    if let Some(newest) = fresh.last() {
-        *last_id = newest.id;
+        .collect()
+}
+
+/// Records that a drained batch has been applied and removes its drain file.
+///
+/// Persist the newest id first: if removing the file then fails, the next
+/// drain filters the already-applied commands out instead of replaying them.
+pub fn commit_commands(config_dir: &Path, newest_id: Option<u64>) {
+    let mut last_id = LAST_COMMAND_ID.lock().unwrap();
+    if let Some(id) = newest_id
+        && id > *last_id
+    {
+        *last_id = id;
+        if let Err(e) = storage::write_json(&config_dir.join(LAST_ID_FILE), &LastCommandId { id }) {
+            tracing::error!("Failed to persist widget command id: {e}");
+            // Keep the drain file so the commands are retried on the next run.
+            return;
+        }
     }
-    fresh
+    let _ = fs::remove_file(config_dir.join(DRAIN_FILE));
+}
+
+fn read_last_id(config_dir: &Path) -> u64 {
+    fs::read_to_string(config_dir.join(LAST_ID_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<LastCommandId>(&text).ok())
+        .map(|data| data.id)
+        .unwrap_or(0)
 }
 
 fn read_command_file(config_dir: &Path) -> Vec<Command> {
     let path = config_dir.join(COMMAND_FILE);
     let drain_path = config_dir.join(DRAIN_FILE);
-    let mut commands = Vec::new();
 
-    // Recover a drain file left behind by an earlier crash.
+    // A drain file is a batch that was not committed yet, either because the
+    // app died while applying it or because removing it failed. Keep it until
+    // commit_commands runs. New commands wait one tick while it is recovered.
     if drain_path.exists() {
-        commands.extend(parse_command_file(&drain_path));
-        let _ = fs::remove_file(&drain_path);
+        return parse_command_file(&drain_path);
     }
 
     // Renaming is atomic: the widget can append to a fresh command file while
     // we process what was already queued, without a read-clear race.
     if fs::rename(&path, &drain_path).is_ok() {
-        commands.extend(parse_command_file(&drain_path));
-        let _ = fs::remove_file(&drain_path);
+        return parse_command_file(&drain_path);
     }
 
-    commands
+    Vec::new()
 }
 
 fn parse_command_file(path: &Path) -> Vec<Command> {
@@ -347,6 +379,8 @@ mod tests {
 
         let drained = drain_commands(&dir);
         assert_eq!(drained.len(), 1);
+        commit_commands(&dir, drained.last().map(|command| command.id));
+        assert!(drain_commands(&dir).is_empty());
     }
 
     #[test]
@@ -370,6 +404,65 @@ mod tests {
         assert_eq!(drained[0].action, "work-start");
         assert_eq!(drained[0].at, 1_700_000_000);
         assert!(drained[0].id > 0);
+        commit_commands(&dir, drained.last().map(|command| command.id));
+    }
+
+    #[test]
+    fn uncommitted_commands_are_retried() {
+        let _guard = drain_guard();
+        let dir = temp_dir("retry");
+        storage::write_json(
+            &dir.join(COMMAND_FILE),
+            &CommandFile {
+                commands: vec![Command {
+                    id: 7,
+                    action: "work-stop".into(),
+                    at: 0,
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(drain_commands(&dir).len(), 1);
+        // No commit yet, as if the process died while applying the command.
+        let retried = drain_commands(&dir);
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].id, 7);
+    }
+
+    #[test]
+    fn committed_commands_do_not_replay_from_a_leftover_drain_file() {
+        let _guard = drain_guard();
+        let dir = temp_dir("committed");
+        let command = Command {
+            id: 11,
+            action: "sleep-wake".into(),
+            at: 0,
+        };
+        storage::write_json(
+            &dir.join(COMMAND_FILE),
+            &CommandFile {
+                commands: vec![command.clone()],
+            },
+        )
+        .unwrap();
+
+        let drained = drain_commands(&dir);
+        assert_eq!(drained.len(), 1);
+        commit_commands(&dir, drained.last().map(|item| item.id));
+
+        // Simulate a failed remove: the drain file is still there, but the id
+        // was persisted, so it must be filtered out.
+        storage::write_json(
+            &dir.join(DRAIN_FILE),
+            &CommandFile {
+                commands: vec![command],
+            },
+        )
+        .unwrap();
+        assert!(drain_commands(&dir).is_empty());
+        commit_commands(&dir, None);
+        assert!(!dir.join(DRAIN_FILE).exists());
     }
 }
 
