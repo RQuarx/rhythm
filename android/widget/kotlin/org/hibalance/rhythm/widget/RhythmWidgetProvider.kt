@@ -202,10 +202,24 @@ class RhythmWidgetProvider : AppWidgetProvider() {
             views.setInt(it, "setTextColor", colors.controlForeground)
         }
 
+        val elapsed = elapsedSinceUpdate(state)
         val pausedSeconds = if (state.workActive && state.workPaused) {
-            state.pausedSeconds + elapsedSinceUpdate(state)
+            state.pausedSeconds + elapsed
         } else {
             0
+        }
+        // The state file is only written while the app runs. Add the time since
+        // the last write to an active timer so a refresh after a long gap does
+        // not restart the Chronometer from a stale value.
+        val workSeconds = if (state.workActive && !state.workPaused) {
+            state.workSeconds + elapsed
+        } else {
+            state.workSeconds
+        }
+        val sleepSeconds = if (state.sleepActive) {
+            state.sleepSeconds + elapsed
+        } else {
+            state.lastNightSeconds
         }
         views.setTextViewText(
             R.id.work_status,
@@ -218,15 +232,14 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         )
         // Chronometer keeps ticking in the launcher process while the app is
         // not running, so an active timer stays accurate between updates.
-        setChronometer(views, R.id.work_time, state.workSeconds, state.workActive && !state.workPaused)
+        setChronometer(views, R.id.work_time, workSeconds, state.workActive && !state.workPaused)
         views.setTextViewText(
             R.id.sleep_status,
             if (state.sleepActive) "Sleeping" else "Awake",
         )
-        val sleepSeconds = if (state.sleepActive) state.sleepSeconds else state.lastNightSeconds
         setChronometer(views, R.id.sleep_time, sleepSeconds, state.sleepActive)
 
-        views.setProgressBar(R.id.work_progress, 100, percent(state.workSeconds, state.workTarget), false)
+        views.setProgressBar(R.id.work_progress, 100, percent(workSeconds, state.workTarget), false)
         views.setProgressBar(R.id.sleep_progress, 100, percent(sleepSeconds, state.sleepTarget), false)
 
         views.setViewVisibility(R.id.work_start, if (state.workActive) View.GONE else View.VISIBLE)
