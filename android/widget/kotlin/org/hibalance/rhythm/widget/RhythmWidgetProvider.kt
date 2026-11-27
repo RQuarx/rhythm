@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import org.HiBalance.rhythm.R
@@ -116,15 +117,23 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         // that passed since the last write so a button press after a long gap
         // does not roll the displayed duration back.
         val elapsed = elapsedSinceUpdate(state)
+        val staleDay = updatedBeforeToday(state)
         if (state.workActive) {
             if (state.workPaused) {
                 state.pausedSeconds += elapsed
-            } else {
+            } else if (!staleDay) {
                 state.workSeconds += elapsed
             }
         }
         if (state.sleepActive) {
             state.sleepSeconds += elapsed
+        }
+        if (staleDay) {
+            // workSeconds is a daily total. A state written yesterday cannot
+            // contribute to today; only a timer that kept running across
+            // midnight has work to show.
+            state.workSeconds =
+                if (state.workActive && !state.workPaused) secondsSinceMidnight() else 0
         }
 
         when (action) {
@@ -167,16 +176,36 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         state.updatedAt = nowText()
     }
 
-    private fun elapsedSinceUpdate(state: WidgetState): Long {
-        if (state.updatedAt.isEmpty()) return 0
+    private fun updatedAtMillis(state: WidgetState): Long? {
+        if (state.updatedAt.isEmpty()) return null
         return try {
-            val parsed = SimpleDateFormat(STATE_TIME_FORMAT, Locale.US).parse(state.updatedAt)
-                ?: return 0
-            ((System.currentTimeMillis() - parsed.time) / 1000).coerceAtLeast(0)
+            SimpleDateFormat(STATE_TIME_FORMAT, Locale.US).parse(state.updatedAt)?.time
         } catch (_: Exception) {
-            0
+            null
         }
     }
+
+    private fun elapsedSinceUpdate(state: WidgetState): Long {
+        val updated = updatedAtMillis(state) ?: return 0
+        return ((System.currentTimeMillis() - updated) / 1000).coerceAtLeast(0)
+    }
+
+    private fun updatedBeforeToday(state: WidgetState): Boolean {
+        val updated = updatedAtMillis(state) ?: return false
+        return updated < startOfTodayMillis()
+    }
+
+    private fun startOfTodayMillis(): Long {
+        val calendar = Calendar.getInstance()
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+        return calendar.timeInMillis
+    }
+
+    private fun secondsSinceMidnight(): Long =
+        ((System.currentTimeMillis() - startOfTodayMillis()) / 1000).coerceAtLeast(0)
 
     private fun nowText(): String =
         SimpleDateFormat(STATE_TIME_FORMAT, Locale.US).format(Date())
@@ -215,8 +244,11 @@ class RhythmWidgetProvider : AppWidgetProvider() {
         }
         // The state file is only written while the app runs. Add the time since
         // the last write to an active timer so a refresh after a long gap does
-        // not restart the Chronometer from a stale value.
-        val workSeconds = if (state.workActive && !state.workPaused) {
+        // not restart the Chronometer from a stale value. A state written
+        // before midnight must not carry yesterday's work total into today.
+        val workSeconds = if (updatedBeforeToday(state)) {
+            if (state.workActive && !state.workPaused) secondsSinceMidnight() else 0
+        } else if (state.workActive && !state.workPaused) {
             state.workSeconds + elapsed
         } else {
             state.workSeconds
