@@ -112,7 +112,7 @@ impl WorkTimer {
     /// Seconds spent in the current pause, or zero when not paused.
     pub fn current_pause_elapsed(&self) -> u64 {
         match self.state {
-            WorkState::Paused { since } => now().saturating_sub(since) as u64,
+            WorkState::Paused { since } => now().saturating_sub(since).max(0) as u64,
             WorkState::Stopped | WorkState::Running { .. } => 0,
         }
     }
@@ -123,10 +123,10 @@ impl WorkTimer {
             .intervals
             .iter()
             .filter(|interval| interval.active)
-            .map(|interval| interval.end.saturating_sub(interval.start) as u64)
+            .map(|interval| interval.end.saturating_sub(interval.start).max(0) as u64)
             .sum();
         let current = match self.state {
-            WorkState::Running { since } => now().saturating_sub(since) as u64,
+            WorkState::Running { since } => now().saturating_sub(since).max(0) as u64,
             WorkState::Stopped | WorkState::Paused { .. } => 0,
         };
         self.accumulated + recorded + current
@@ -488,6 +488,15 @@ mod tests {
         assert!(timer.current_pause_elapsed() >= 120);
 
         timer.state = WorkState::Stopped;
+        assert_eq!(timer.current_pause_elapsed(), 0);
+    }
+
+    #[test]
+    fn future_pause_start_does_not_wrap_to_a_huge_duration() {
+        let mut timer = timer();
+        timer.state = WorkState::Paused {
+            since: now() + 60,
+        };
         assert_eq!(timer.current_pause_elapsed(), 0);
     }
 

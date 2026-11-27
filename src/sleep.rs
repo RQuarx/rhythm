@@ -187,7 +187,7 @@ impl SleepTracker {
             return Ok(None);
         };
         let wake_time = event_time(at).max(bedtime.saturating_add(1));
-        let seconds = wake_time.saturating_sub(bedtime) as u64;
+        let seconds = wake_time.saturating_sub(bedtime).max(0) as u64;
         let previous = self.pending.replace(PendingNight {
             bedtime,
             wake_time,
@@ -344,7 +344,7 @@ impl SleepTracker {
                 last,
                 bedtime,
                 wake_time,
-                wake_time.saturating_sub(bedtime) as u64,
+                wake_time.saturating_sub(bedtime).max(0) as u64,
                 true,
             );
         }
@@ -369,7 +369,7 @@ impl SleepTracker {
         };
         let from = bedtime.max(start);
         let to = now().min(end);
-        to.saturating_sub(from) as u64
+        to.saturating_sub(from).max(0) as u64
     }
 
     fn save(&self) -> Result<(), Error> {
@@ -506,6 +506,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rhythm-sleep-{label}-{nanos}"));
         fs::create_dir_all(&dir).unwrap();
         SleepTracker::new(&dir)
+    }
+
+    #[test]
+    fn active_night_only_counts_toward_its_own_day() {
+        let mut tracker = temp_tracker("active-week");
+        let today = Local::now().date_naive();
+        let first = today - ChronoDuration::days(3);
+        let last = today + ChronoDuration::days(2);
+        tracker.bedtime = Some(now() - 600);
+
+        let series = tracker.series_between(first, last);
+        let active = series
+            .iter()
+            .find(|(date, _)| *date == today)
+            .unwrap()
+            .1;
+        assert!((600..=601).contains(&active));
+        for (date, seconds) in series {
+            if date != today {
+                assert_eq!(seconds, 0, "unexpected sleep on {date}");
+            }
+        }
+        assert!(tracker.total_between(first, last) < 3600);
+    }
+
+    #[test]
+    fn future_bedtime_does_not_wrap_to_a_huge_duration() {
+        let mut tracker = temp_tracker("future-bedtime");
+        tracker.bedtime = Some(now() + 3600);
+
+        assert_eq!(tracker.current_elapsed(), 0);
+        assert_eq!(tracker.today_total(), 0);
     }
 
     #[test]
