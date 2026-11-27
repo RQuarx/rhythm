@@ -1268,6 +1268,44 @@ mod tests {
     }
 
     #[test]
+    fn going_to_bed_stops_work() {
+        let dir = temp_dir("bed-stops-work");
+        let mut app = app_at(&dir);
+        app.start_work();
+        assert!(app.work.is_active());
+
+        app.start_sleep();
+        assert!(app.sleep.is_sleeping());
+        assert!(!app.work.is_active());
+    }
+
+    #[test]
+    fn work_cannot_start_while_sleeping() {
+        let dir = temp_dir("no-work-while-sleeping");
+        let mut app = app_at(&dir);
+        app.start_sleep();
+        assert!(app.sleep.is_sleeping());
+
+        app.start_work();
+        assert!(!app.work.is_active());
+    }
+
+    #[test]
+    fn going_to_bed_keeps_work_when_a_correction_is_pending() {
+        let dir = temp_dir("pending-blocks-bed");
+        let mut app = app_at(&dir);
+        app.start_work();
+        let bedtime = Local::now().timestamp() - 3600;
+        app.sleep.go_to_bed_at(bedtime).unwrap();
+        app.sleep.wake_up_at(bedtime + 1800).unwrap();
+        assert!(app.sleep.has_pending());
+
+        app.start_sleep();
+        assert!(!app.sleep.is_sleeping());
+        assert!(app.work.is_active());
+    }
+
+    #[test]
     fn usual_work_hours_are_saved_and_drive_the_work_target() {
         let dir = temp_dir("work-hours");
         let mut app = app_at(&dir);
