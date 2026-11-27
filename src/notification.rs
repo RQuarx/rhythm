@@ -1,5 +1,19 @@
 use std::error::Error;
 
+/// Stable notification id derived from the rule title, so separate rules can
+/// be shown at the same time while repeated warnings for one rule replace the
+/// previous notification instead of piling up.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn notification_id(title: &str) -> i32 {
+    // FNV-1a keeps the id stable across processes and Rust versions.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in title.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    (hash & 0x7fff_ffff) as i32
+}
+
 /// Shows a notification with a title and body on the current platform.
 pub fn notify(title: &str, body: &str) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "android")]
@@ -44,7 +58,6 @@ mod android {
     const CHANNEL_NAME: &str = "General";
     const IMPORTANCE_DEFAULT: i32 = 3;
     const PRIORITY_DEFAULT: i32 = 0;
-    const NOTIFICATION_ID: i32 = 1;
     const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
     const PERMISSION_GRANTED: i32 = 0;
     const PERMISSION_REQUEST_CODE: i32 = 1;
@@ -83,6 +96,7 @@ mod android {
         body: &str,
         request_permission: bool,
     ) -> JniResult<()> {
+        let id = super::notification_id(title);
         let sdk = sdk_int(env)?;
         if request_permission {
             request_notification_permission(env, context, sdk);
@@ -184,7 +198,7 @@ mod android {
             &manager,
             "notify",
             "(ILandroid/app/Notification;)V",
-            &[JValue::Int(NOTIFICATION_ID), (&notification).into()],
+            &[JValue::Int(id), (&notification).into()],
         )?;
 
         Ok(())
@@ -246,5 +260,24 @@ mod android {
         {
             let _ = env.exception_clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notification_id;
+
+    #[test]
+    fn different_rules_get_different_notification_ids() {
+        assert_ne!(notification_id("Short sleep"), notification_id("Long work"));
+    }
+
+    #[test]
+    fn notification_ids_are_stable() {
+        assert_eq!(
+            notification_id("Short sleep"),
+            notification_id("Short sleep")
+        );
+        assert!(notification_id("") >= 0);
     }
 }
