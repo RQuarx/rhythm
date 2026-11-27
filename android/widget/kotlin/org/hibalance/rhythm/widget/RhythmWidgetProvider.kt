@@ -202,11 +202,16 @@ class RhythmWidgetProvider : AppWidgetProvider() {
             views.setInt(it, "setTextColor", colors.controlForeground)
         }
 
+        val pausedSeconds = if (state.workActive && state.workPaused) {
+            state.pausedSeconds + elapsedSinceUpdate(state)
+        } else {
+            0
+        }
         views.setTextViewText(
             R.id.work_status,
             when {
                 state.workActive && state.workPaused ->
-                    "Paused ${formatDuration(state.pausedSeconds)}"
+                    "Paused ${formatDuration(pausedSeconds)}"
                 state.workActive -> "Working"
                 else -> "Not working"
             },
