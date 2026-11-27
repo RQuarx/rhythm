@@ -16,11 +16,11 @@
         android:textStyle="bold"
         android:textSize="13sp" />
 
-    <TextView
+    <Chronometer
         android:id="@+id/work_time"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="00h 00m"
+        android:format="%s"
         android:textColor="@android:color/white"
         android:textSize="12sp" />
 
@@ -39,11 +39,11 @@
         android:textColor="@android:color/white"
         android:textSize="12sp" />
 
-    <TextView
+    <Chronometer
         android:id="@+id/sleep_time"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="00h 00m"
+        android:format="%s"
         android:textColor="@android:color/white"
         android:textSize="12sp" />
 

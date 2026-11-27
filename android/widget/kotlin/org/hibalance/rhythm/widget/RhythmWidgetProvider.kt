@@ -10,6 +10,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
@@ -177,13 +178,15 @@ class RhythmWidgetProvider : AppWidgetProvider() {
                 else -> "Not working"
             },
         )
-        views.setTextViewText(R.id.work_time, formatDuration(state.workSeconds))
+        // Chronometer keeps ticking in the launcher process while the app is
+        // not running, so an active timer stays accurate between updates.
+        setChronometer(views, R.id.work_time, state.workSeconds, state.workActive && !state.workPaused)
         views.setTextViewText(
             R.id.sleep_status,
             if (state.sleepActive) "Sleeping" else "Awake",
         )
         val sleepSeconds = if (state.sleepActive) state.sleepSeconds else state.lastNightSeconds
-        views.setTextViewText(R.id.sleep_time, formatDuration(sleepSeconds))
+        setChronometer(views, R.id.sleep_time, sleepSeconds, state.sleepActive)
 
         views.setProgressBar(R.id.work_progress, 100, percent(state.workSeconds, state.workTarget), false)
         views.setProgressBar(R.id.sleep_progress, 100, percent(sleepSeconds, state.sleepTarget), false)
@@ -235,6 +238,12 @@ class RhythmWidgetProvider : AppWidgetProvider() {
 
     private fun immutableFlag(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
+
+    private fun setChronometer(views: RemoteViews, id: Int, seconds: Long, running: Boolean) {
+        val safeSeconds = seconds.coerceIn(0, Long.MAX_VALUE / 1000)
+        val base = SystemClock.elapsedRealtime() - safeSeconds * 1000
+        views.setChronometer(id, base, "%s", running)
+    }
 
     private fun formatDuration(seconds: Long): String {
         val hours = seconds / 3600
