@@ -482,9 +482,7 @@ mod tests {
     #[test]
     fn future_pause_start_does_not_wrap_to_a_huge_duration() {
         let mut timer = timer();
-        timer.state = WorkState::Paused {
-            since: now() + 60,
-        };
+        timer.state = WorkState::Paused { since: now() + 60 };
         assert_eq!(timer.current_pause_elapsed(), 0);
     }
 

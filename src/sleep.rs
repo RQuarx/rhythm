@@ -583,11 +583,7 @@ mod tests {
         tracker.bedtime = Some(now() - 600);
 
         let series = tracker.series_between(first, last);
-        let active = series
-            .iter()
-            .find(|(date, _)| *date == today)
-            .unwrap()
-            .1;
+        let active = series.iter().find(|(date, _)| *date == today).unwrap().1;
         assert!((600..=601).contains(&active));
         for (date, seconds) in series {
             if date != today {
@@ -792,7 +788,12 @@ mod tests {
 
         let tracker = SleepTracker::load(&dir).unwrap();
         assert_eq!(tracker.nights.len(), MAX_NIGHTS);
-        assert!(tracker.nights.iter().all(|n| n.seconds == MAX_NIGHT_SECONDS));
+        assert!(
+            tracker
+                .nights
+                .iter()
+                .all(|n| n.seconds == MAX_NIGHT_SECONDS)
+        );
     }
 
     #[test]
