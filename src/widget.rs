@@ -195,6 +195,33 @@ fn queue_native_command(json: &str) {
 }
 
 #[cfg(target_os = "android")]
+fn load_app_class<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    context: &jni::objects::JObject<'local>,
+    name: &str,
+) -> Option<jni::objects::JClass<'local>> {
+    use jni::{objects::JClass, objects::JValue};
+
+    let loader = env
+        .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let name = env.new_string(name).ok()?;
+    let class = env
+        .call_method(
+            &loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&name)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    Some(JClass::from(class))
+}
+
+#[cfg(target_os = "android")]
 pub fn notify_widget() {
     use jni::{JavaVM, objects::JObject};
 
@@ -206,8 +233,21 @@ pub fn notify_widget() {
         return;
     };
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    // FindClass on a native thread uses the boot class loader, which cannot
+    // see the app's classes. Resolve the provider through the activity's
+    // class loader instead.
+    let Some(class) = load_app_class(
+        &mut env,
+        &activity,
+        "org.hibalance.rhythm.widget.RhythmWidgetProvider",
+    ) else {
+        let _ = env.exception_clear();
+        return;
+    };
+
     let result = env.call_static_method(
-        "org/hibalance/rhythm/widget/RhythmWidgetProvider",
+        class,
         "updateAll",
         "(Landroid/content/Context;)V",
         &[(&activity).into()],
